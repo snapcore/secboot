@@ -117,6 +117,7 @@ func isTPMVerificationError(err error) bool {
 // InvalidKeyFileError indicates that the provided key data file is invalid. This error may also be returned in some
 // scenarious where the TPM is incorrectly provisioned, but it isn't possible to determine whether the error is with
 // the provisioning status or because the key data file is invalid.
+// TODO: Rename this to InvalidKeyDataErrro
 type InvalidKeyFileError struct {
 	msg string
 }
@@ -132,6 +133,7 @@ func isInvalidKeyFileError(err error) bool {
 
 // LockAccessToSealedKeysError is returned from ActivateVolumeWithTPMSealedKey if an error occurred whilst trying to lock access
 // to sealed keys created by this package.
+// TODO: Maybe rename this to something less TPM-like?
 type LockAccessToSealedKeysError string
 
 func (e LockAccessToSealedKeysError) Error() string {

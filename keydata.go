@@ -24,6 +24,7 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -393,41 +394,12 @@ func (d *keyData) validate(tpm *tpm2.TPMContext, policyUpdateData *keyPolicyUpda
 
 // write serializes keyData in to the provided io.Writer.
 func (d *keyData) write(w io.Writer) error {
-	if _, err := mu.MarshalToWriter(w, keyDataHeader, d); err != nil {
-		return err
-	}
-	return nil
-}
-
-// writeToFileAtomic serializes keyData and writes it atomically to the file at the specified path.
-func (d *keyData) writeToFileAtomic(dest string) error {
-	f, err := osutil.NewAtomicFile(dest, 0600, 0, sys.UserID(osutil.NoChown), sys.GroupID(osutil.NoChown))
-	if err != nil {
-		return xerrors.Errorf("cannot create new atomic file: %w", err)
-	}
-	defer f.Cancel()
-
-	if err := d.write(f); err != nil {
-		return xerrors.Errorf("cannot write to temporary file: %w", err)
-	}
-
-	if err := f.Commit(); err != nil {
-		return xerrors.Errorf("cannot atomically replace file: %w", err)
-	}
-
-	return nil
+	_, err := mu.MarshalToWriter(w, d)
+	return err
 }
 
 // decodeKeyData deserializes keyData from the provided io.Reader.
 func decodeKeyData(r io.Reader) (*keyData, error) {
-	var header uint32
-	if _, err := mu.UnmarshalFromReader(r, &header); err != nil {
-		return nil, xerrors.Errorf("cannot unmarshal header: %w", err)
-	}
-	if header != keyDataHeader {
-		return nil, fmt.Errorf("unexpected header (%d)", header)
-	}
-
 	var d keyData
 	if _, err := mu.UnmarshalFromReader(r, &d); err != nil {
 		return nil, xerrors.Errorf("cannot unmarshal data: %w", err)
@@ -453,36 +425,48 @@ func isKeyFileError(err error) bool {
 	return xerrors.As(err, &e)
 }
 
-// decodeAndValidateKeyData will deserialize keyData and keyPolicyUpdateData from the provided io.Readers and then perform some correctness
-// checking. On success, it returns the keyData, keyPolicyUpdateData and the validated public area of the PIN NV index.
-func decodeAndValidateKeyData(tpm *tpm2.TPMContext, keyFile, keyPolicyUpdateFile io.Reader, session tpm2.SessionContext) (*keyData, *keyPolicyUpdateData, *tpm2.NVPublic, error) {
-	// Read the key data
-	data, err := decodeKeyData(keyFile)
-	if err != nil {
-		return nil, nil, nil, keyFileError{xerrors.Errorf("cannot read key data: %w", err)}
-	}
-
-	var policyUpdateData *keyPolicyUpdateData
-	if keyPolicyUpdateFile != nil {
-		var err error
-		policyUpdateData, err = decodeKeyPolicyUpdateData(keyPolicyUpdateFile)
-		if err != nil {
-			return nil, nil, nil, keyFileError{xerrors.Errorf("cannot read dynamic policy update data: %w", err)}
-		}
-	}
-
-	pinNVPublic, err := data.validate(tpm, policyUpdateData, session)
-	if err != nil {
-		return nil, nil, nil, xerrors.Errorf("cannot validate key data: %w", err)
-	}
-
-	return data, policyUpdateData, pinNVPublic, nil
+type sealedKeyObjectStorage interface {
+	commitAtomic(data *keyData) error
 }
 
-// SealedKeyObject corresponds to a sealed key data file and exists to provide access to some read only operations on the underlying
-// file without having to read and deserialize the key data file more than once.
+type sealedKeyObjectStorageReadOnly struct{}
+
+func (s sealedKeyObjectStorageReadOnly) commitAtomic(data *keyData) error {
+	return errors.New("cannot commit updates for read only object")
+}
+
+type sealedKeyObjectStorageFile string
+
+func (s sealedKeyObjectStorageFile) commitAtomic(data *keyData) error {
+	f, err := osutil.NewAtomicFile(string(s), 0600, 0, sys.UserID(osutil.NoChown), sys.GroupID(osutil.NoChown))
+	if err != nil {
+		return xerrors.Errorf("cannot create new atomic file: %w", err)
+	}
+	defer f.Cancel()
+
+	if err := binary.Write(f, binary.BigEndian, keyDataHeader); err != nil {
+		return xerrors.Errorf("cannot write header to temporary file: %w", err)
+	}
+
+	if err := data.write(f); err != nil {
+		return xerrors.Errorf("cannot write to temporary file: %w", err)
+	}
+
+	if err := f.Commit(); err != nil {
+		return xerrors.Errorf("cannot atomically replace file: %w", err)
+	}
+
+	return nil
+}
+
+// SealedKeyObject corresponds to a sealed key data file.
 type SealedKeyObject struct {
-	data *keyData
+	storage sealedKeyObjectStorage
+	data    *keyData
+}
+
+func (k *SealedKeyObject) commitAtomic() error {
+	return k.storage.commitAtomic(k.data)
 }
 
 // AuthMode2F indicates the 2nd-factor authentication type for this sealed key object.
@@ -495,21 +479,30 @@ func (k *SealedKeyObject) PINIndexHandle() tpm2.Handle {
 	return k.data.staticPolicyData.PinIndexHandle
 }
 
-// ReadSealedKeyObject loads a sealed key data file created by SealKeyToTPM from the specified path. If the file cannot be opened,
-// a wrapped *os.PathError error is returned. If the key data file cannot be deserialized successfully, a InvalidKeyFileError error
-// will be returned.
-func ReadSealedKeyObject(path string) (*SealedKeyObject, error) {
+// ReadSealedKeyObjectFromFile loads a sealed key data file created by SealKeyToTPM from the specified path. If the file cannot be
+// opened, a wrapped *os.PathError error is returned. If the key data file cannot be deserialized successfully, a InvalidKeyFileError
+// error will be returned.
+func ReadSealedKeyObjectFromFile(path string) (*SealedKeyObject, error) {
 	// Open the key data file
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, xerrors.Errorf("cannot open key data file: %w", err)
+		return nil, xerrors.Errorf("cannot open file: %w", err)
 	}
 	defer f.Close()
+
+	var header uint32
+	if err := binary.Read(f, binary.BigEndian, &header); err != nil {
+		return nil, xerrors.Errorf("cannot read header: %w", err)
+	}
+
+	if header != keyDataHeader {
+		return nil, fmt.Errorf("unexpected header (%d)", header)
+	}
 
 	data, err := decodeKeyData(f)
 	if err != nil {
 		return nil, InvalidKeyFileError{err.Error()}
 	}
 
-	return &SealedKeyObject{data: data}, nil
+	return &SealedKeyObject{storage: sealedKeyObjectStorageFile(path), data: data}, nil
 }
