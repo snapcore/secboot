@@ -116,7 +116,7 @@ func TestUnsealWithPIN(t *testing.T) {
 
 	testPIN := "1234"
 
-	if err := ChangePIN(tpm, keyFile, "", testPIN); err != nil {
+	if err := ChangePIN(tpm, keyFile, &testPINParams, "", testPIN); err != nil {
 		t.Errorf("ChangePIN failed: %v", err)
 	}
 
@@ -301,7 +301,7 @@ func TestUnsealErrorHandling(t *testing.T) {
 		defer closeTPM(t, tpm)
 
 		err := run(t, tpm, func(keyFile string, _ []byte) {
-			if err := ChangePIN(tpm, keyFile, "", "1234"); err != nil {
+			if err := ChangePIN(tpm, keyFile, &testPINParams, "", "1234"); err != nil {
 				t.Errorf("ChangePIN failed: %v", err)
 			}
 		})

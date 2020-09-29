@@ -20,6 +20,10 @@
 package secboot
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"fmt"
+
 	"github.com/canonical/go-tpm2"
 	"github.com/snapcore/secboot/internal/tcg"
 
@@ -68,9 +72,18 @@ import (
 // condition can also occur as the result of an incorrectly provisioned TPM, which will be detected during a subsequent call to
 // SealKeyToTPM.
 //
+// If a PIN has been set, then this function can be memory intensive depending on the PIN parameters and it doesn't explicitly run
+// a garbage collection before completing.
+//
 // On success, the unsealed cleartext key is returned as the first return value, and the private part of the key used for
 // authorizing PCR policy updates with UpdateKeyPCRProtectionPolicy is returned as the second return value.
 func (k *SealedKeyObject) UnsealFromTPM(tpm *TPMConnection, pin string) (key []byte, authKey TPMPolicyAuthKey, err error) {
+	switch k.data.version {
+	case 0, 1:
+	default:
+		return nil, nil, InvalidKeyFileError{"invalid metadata version"}
+	}
+
 	// Check if the TPM is in lockout mode
 	props, err := tpm.GetCapabilityTPMProperties(tpm2.PropertyPermanent, 1)
 	if err != nil {
@@ -116,14 +129,36 @@ func (k *SealedKeyObject) UnsealFromTPM(tpm *TPMConnection, pin string) (key []b
 	}
 	defer tpm.FlushContext(keyObject)
 
+	if !k.data.sealedKey.public.NameAlg.Supported() {
+		return nil, nil, InvalidKeyFileError{"sealed key object has an unsupported name algorithm"}
+	}
+
+	var ik []byte
+	var tpmAuthValue []byte
+	if k.data.version == 0 {
+		tpmAuthValue = []byte(pin)
+	} else {
+		if k.data.authModeHint == AuthModeNone {
+			ik = k.data.unprotectedIK
+		} else {
+			var err error
+			ik, tpmAuthValue, err = k.data.pinData.decryptIKAndObtainTPMAuthValue(pin, k.data.sealedKey.public.NameAlg.Size())
+			if err != nil {
+				return nil, nil, InvalidKeyFileError{fmt.Sprintf("cannot decrypt intermediate key: %v", err)}
+			}
+			// We don't know that the PIN is correct yet. If it is wrong then both ik and tpmAuthValue will be wrong, and this will
+			// be picked up by the TPM first.
+		}
+	}
+
 	// Begin and execute policy session
-	policySession, err := tpm.StartAuthSession(nil, nil, tpm2.SessionTypePolicy, nil, k.data.keyPublic.NameAlg)
+	policySession, err := tpm.StartAuthSession(nil, nil, tpm2.SessionTypePolicy, nil, k.data.sealedKey.public.NameAlg)
 	if err != nil {
 		return nil, nil, xerrors.Errorf("cannot start policy session: %w", err)
 	}
 	defer tpm.FlushContext(policySession)
 
-	if err := executePolicySession(tpm.TPMContext, policySession, k.data.version, k.data.staticPolicyData, k.data.dynamicPolicyData, pin, hmacSession); err != nil {
+	if err := executePolicySession(tpm.TPMContext, policySession, k.data.version, k.data.staticPolicyData, k.data.dynamicPolicyData, tpmAuthValue, hmacSession); err != nil {
 		err = xerrors.Errorf("cannot complete authorization policy assertions: %w", err)
 		switch {
 		case isDynamicPolicyDataError(err):
@@ -141,9 +176,9 @@ func (k *SealedKeyObject) UnsealFromTPM(tpm *TPMConnection, pin string) (key []b
 		return nil, nil, err
 	}
 
-	// For metadata version > 0, the PIN is the auth value for the sealed key object, and the authorization
+	// For metadata version > 0, the PIN is used to derive the auth value for the sealed key object, and the authorization
 	// policy asserts that this value is known when the policy session is used.
-	keyObject.SetAuthValue([]byte(pin))
+	keyObject.SetAuthValue([]byte(tpmAuthValue))
 
 	// Unseal
 	keyData, err := tpm.Unseal(keyObject, policySession, hmacSession.IncludeAttrs(tpm2.AttrResponseEncrypt))
@@ -153,12 +188,26 @@ func (k *SealedKeyObject) UnsealFromTPM(tpm *TPMConnection, pin string) (key []b
 	case isAuthFailError(err, tpm2.CommandUnseal, 1):
 		return nil, nil, ErrPINFail
 	case err != nil:
-		return nil, nil, xerrors.Errorf("cannot unseal key: %w", err)
+		return nil, nil, xerrors.Errorf("cannot unseal encrypted key: %w", err)
 	}
 
 	if k.data.version == 0 {
 		return keyData, nil, nil
 	}
+
+	// key is really keyEnc, encrypted with the intermediate key
+	c, err := aes.NewCipher(ik)
+	if err != nil {
+		return nil, nil, xerrors.Errorf("cannot create block cipher: %w", err)
+	}
+	if len(k.data.keyIV) != c.BlockSize() {
+		return nil, nil, InvalidKeyFileError{"invalid IV length"}
+	}
+	if len(keyData)%c.BlockSize() != 0 {
+		return nil, nil, InvalidKeyFileError{"invalid encrypted key length"}
+	}
+	b := cipher.NewCBCDecrypter(c, k.data.keyIV)
+	b.CryptBlocks(keyData, keyData)
 
 	var sealedData sealedData
 	if _, err := tpm2.UnmarshalFromBytes(keyData, &sealedData); err != nil {

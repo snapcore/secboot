@@ -20,7 +20,10 @@
 package secboot
 
 import (
+	"bytes"
 	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -247,6 +250,36 @@ func SealKeyToTPM(tpm *TPMConnection, key []byte, keyPath string, params *KeyCre
 		return nil, xerrors.Errorf("cannot compute name of signing key for dynamic policy authorization: %w", err)
 	}
 
+	var ik [ikLength]byte
+	if _, err := rand.Read(ik[:]); err != nil {
+		return nil, xerrors.Errorf("cannot create intermediate key: %w", err)
+	}
+
+	var keyIV [aes.BlockSize]byte
+	if _, err := rand.Read(keyIV[:]); err != nil {
+		return nil, xerrors.Errorf("cannot create IV: %w", err)
+	}
+
+	c, err := aes.NewCipher(ik[:])
+	if err != nil {
+		return nil, xerrors.Errorf("cannot create block cipher: %w", err)
+	}
+
+	var sealedBytes bytes.Buffer
+	if _, err := tpm2.MarshalToWriter(&sealedBytes, sealedData{Key: key, AuthPrivateKey: goAuthKey.D.Bytes()}); err != nil {
+		panic(fmt.Sprintf("cannot marshal sensitive data: %v", err))
+	}
+	padding := make([]byte, c.BlockSize()-sealedBytes.Len()%c.BlockSize())
+	if _, err := rand.Read(padding); err != nil {
+		return nil, xerrors.Errorf("cannot create random padding bytes: %w", err)
+	}
+	if _, err := sealedBytes.Write(padding); err != nil {
+		return nil, xerrors.Errorf("cannot write padding bytes: %w", err)
+	}
+
+	b := cipher.NewCBCEncrypter(c, keyIV[:])
+	b.CryptBlocks(sealedBytes.Bytes(), sealedBytes.Bytes())
+
 	// Create PCR policy counter
 	var pcrPolicyCounterPub *tpm2.NVPublic
 	if params.PCRPolicyCounterHandle != tpm2.HandleNull {
@@ -286,11 +319,7 @@ func SealKeyToTPM(tpm *TPMConnection, key []byte, keyPath string, params *KeyCre
 	template.AuthPolicy = authPolicy
 
 	// Create the sensitive data
-	sealedData, err := tpm2.MarshalToBytes(sealedData{Key: key, AuthPrivateKey: goAuthKey.D.Bytes()})
-	if err != nil {
-		panic(fmt.Sprintf("cannot marshal sensitive data: %v", err))
-	}
-	sensitive := tpm2.SensitiveCreate{Data: sealedData}
+	sensitive := tpm2.SensitiveCreate{Data: sealedBytes.Bytes()}
 
 	// Now create the sealed key object. The command is integrity protected so if the object at the handle we expect the SRK to reside
 	// at has a different name (ie, if we're connected via a resource manager and somebody swapped the object with another one), this
@@ -313,12 +342,15 @@ func SealKeyToTPM(tpm *TPMConnection, key []byte, keyPath string, params *KeyCre
 
 	// Marshal the entire object (sealed key object and auxiliary data) to disk
 	data := keyData{
-		version:           currentMetadataVersion,
-		keyPrivate:        priv,
-		keyPublic:         pub,
+		version: currentMetadataVersion,
+		sealedKey: tpmObject{
+			private: priv,
+			public:  pub},
+		keyIV:             keyIV[:],
 		authModeHint:      AuthModeNone,
 		staticPolicyData:  staticPolicyData,
-		dynamicPolicyData: dynamicPolicyData}
+		dynamicPolicyData: dynamicPolicyData,
+		unprotectedIK:     ik[:]}
 
 	if err := data.write(keyFile); err != nil {
 		return nil, xerrors.Errorf("cannot write key data file: %w", err)
@@ -359,8 +391,8 @@ func updateKeyPCRProtectionPolicyCommon(tpm *tpm2.TPMContext, keyPath string, au
 	if pcrProfile == nil {
 		pcrProfile = &PCRProtectionProfile{}
 	}
-	policyData, err := computeSealedKeyDynamicAuthPolicy(tpm, data.version, data.keyPublic.NameAlg, authPublicKey.NameAlg, authKey,
-		pcrPolicyCounterPub, v0PinIndexAuthPolicies, pcrProfile, session)
+	policyData, err := computeSealedKeyDynamicAuthPolicy(tpm, data.version, data.sealedKey.public.NameAlg,
+		authPublicKey.NameAlg, authKey, pcrPolicyCounterPub, v0PinIndexAuthPolicies, pcrProfile, session)
 	if err != nil {
 		return xerrors.Errorf("cannot compute dynamic authorization policy: %w", err)
 	}
