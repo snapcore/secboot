@@ -17,7 +17,7 @@
  *
  */
 
-package secboot_test
+package tpm2_test
 
 import (
 	"bytes"
@@ -25,11 +25,13 @@ import (
 	"testing"
 
 	"github.com/canonical/go-tpm2"
-	. "github.com/snapcore/secboot"
-	"github.com/snapcore/secboot/internal/tcg"
-	"github.com/snapcore/secboot/internal/testutil"
 
 	. "gopkg.in/check.v1"
+
+	"github.com/snapcore/secboot"
+	"github.com/snapcore/secboot/internal/tcg"
+	"github.com/snapcore/secboot/internal/testutil"
+	. "github.com/snapcore/secboot/tpm2"
 )
 
 func TestPerformPinChange(t *testing.T) {
@@ -123,9 +125,9 @@ func (s *pinSuite) checkPIN(c *C, pin string) {
 	k, err := ReadSealedKeyObject(s.keyFile)
 	c.Assert(err, IsNil)
 	if pin == "" {
-		c.Check(k.AuthMode2F(), Equals, AuthModeNone)
+		c.Check(k.AuthMode2F(), Equals, secboot.AuthModeNone)
 	} else {
-		c.Check(k.AuthMode2F(), Equals, AuthModePassphrase)
+		c.Check(k.AuthMode2F(), Equals, secboot.AuthModePassphrase)
 	}
 
 	key, _, err := k.UnsealFromTPM(s.TPM, pin)
@@ -134,11 +136,14 @@ func (s *pinSuite) checkPIN(c *C, pin string) {
 }
 
 func (s *pinSuite) TestSetAndClearPIN(c *C) {
+	k, err := ReadSealedKeyObject(s.keyFile)
+	c.Assert(err, IsNil)
+
 	testPIN := "1234"
-	c.Check(ChangePIN(s.TPM, s.keyFile, "", testPIN), IsNil)
+	c.Check(k.ChangePIN(s.TPM, "", testPIN), IsNil)
 	s.checkPIN(c, testPIN)
 
-	c.Check(ChangePIN(s.TPM, s.keyFile, testPIN, ""), IsNil)
+	c.Check(k.ChangePIN(s.TPM, testPIN, ""), IsNil)
 	s.checkPIN(c, "")
 }
 
@@ -149,7 +154,9 @@ type testChangePINErrorHandlingData struct {
 }
 
 func (s *pinSuite) testChangePINErrorHandling(c *C, data *testChangePINErrorHandlingData) {
-	c.Check(ChangePIN(s.TPM, data.keyFile, "", "1234"), data.errChecker, data.errCheckerArgs...)
+	k, err := ReadSealedKeyObject(data.keyFile)
+	c.Assert(err, IsNil)
+	c.Check(k.ChangePIN(s.TPM, "", "1234"), data.errChecker, data.errCheckerArgs...)
 }
 
 func (s *pinSuite) TestChangePINErrorHandling1(c *C) {
@@ -163,18 +170,12 @@ func (s *pinSuite) TestChangePINErrorHandling1(c *C) {
 }
 
 func (s *pinSuite) TestChangePINErrorHandling2(c *C) {
-	c.Assert(ChangePIN(s.TPM, s.keyFile, "", "1234"), IsNil)
+	k, err := ReadSealedKeyObject(s.keyFile)
+	c.Assert(err, IsNil)
+	c.Assert(k.ChangePIN(s.TPM, "", "1234"), IsNil)
 	s.testChangePINErrorHandling(c, &testChangePINErrorHandlingData{
 		keyFile:        s.keyFile,
 		errChecker:     Equals,
 		errCheckerArgs: []interface{}{ErrPINFail},
-	})
-}
-
-func (s *pinSuite) TestChangePINErrorHandling3(c *C) {
-	s.testChangePINErrorHandling(c, &testChangePINErrorHandlingData{
-		keyFile:        "/path/to/nothing",
-		errChecker:     ErrorMatches,
-		errCheckerArgs: []interface{}{"cannot open key data file: open /path/to/nothing: no such file or directory"},
 	})
 }
