@@ -31,13 +31,12 @@ import (
 	"testing"
 
 	"github.com/canonical/go-tpm2"
-	"github.com/snapcore/secboot"
-	"github.com/snapcore/secboot/internal/testutil"
 
 	. "gopkg.in/check.v1"
-)
 
-var testPIN = "12345678"
+	"github.com/snapcore/secboot/internal/testutil"
+	secboot_tpm2 "github.com/snapcore/secboot/tpm2"
+)
 
 func Test(t *testing.T) { TestingT(t) }
 
@@ -151,18 +150,18 @@ func (s *compatTestSuiteBase) copyFile(c *C, path string) string {
 	return dst.Name()
 }
 
-func (s *compatTestSuiteBase) testUnsealCommon(c *C, pin string) {
-	k, err := secboot.ReadSealedKeyObject(s.absPath("key"))
+func (s *compatTestSuiteBase) testUnsealCommon(c *C) {
+	k, err := secboot_tpm2.ReadSealedKeyObject(s.absPath("key"))
 	c.Assert(err, IsNil)
 
-	key, authPrivateKey, err := k.UnsealFromTPM(s.TPM, pin)
+	key, authPrivateKey, err := k.UnsealFromTPM(s.TPM)
 	c.Check(err, IsNil)
 
 	expectedKey, err := ioutil.ReadFile(s.absPath("clearKey"))
 	c.Assert(err, IsNil)
 	c.Check(key, DeepEquals, expectedKey)
 
-	var expectedAuthPrivateKey secboot.TPMPolicyAuthKey
+	var expectedAuthPrivateKey secboot_tpm2.PolicyAuthKey
 	authKeyPath := s.absPath("authKey")
 	if _, err := os.Stat(authKeyPath); err == nil {
 		expectedAuthPrivateKey, err = ioutil.ReadFile(authKeyPath)
@@ -173,35 +172,13 @@ func (s *compatTestSuiteBase) testUnsealCommon(c *C, pin string) {
 
 func (s *compatTestSuiteBase) testUnseal(c *C, pcrEventsFile string) {
 	s.replayPCRSequenceFromFile(c, pcrEventsFile)
-	s.testUnsealCommon(c, "")
-}
-
-func (s *compatTestSuiteBase) TestChangePIN(c *C) {
-	k, err := secboot.ReadSealedKeyObject(s.absPath("key"))
-	c.Assert(err, IsNil)
-	c.Check(k.AuthMode2F(), Equals, secboot.AuthModeNone)
-
-	c.Check(secboot.ChangePIN(s.TPM, s.absPath("key"), "", testPIN), IsNil)
-	k, err = secboot.ReadSealedKeyObject(s.absPath("key"))
-	c.Assert(err, IsNil)
-	c.Check(k.AuthMode2F(), Equals, secboot.AuthModePassphrase)
-
-	c.Check(secboot.ChangePIN(s.TPM, s.absPath("key"), testPIN, ""), IsNil)
-	k, err = secboot.ReadSealedKeyObject(s.absPath("key"))
-	c.Assert(err, IsNil)
-	c.Check(k.AuthMode2F(), Equals, secboot.AuthModeNone)
-}
-
-func (s *compatTestSuiteBase) testUnsealWithPIN(c *C, pcrEventsFile string) {
-	c.Check(secboot.ChangePIN(s.TPM, s.absPath("key"), "", testPIN), IsNil)
-	s.replayPCRSequenceFromFile(c, pcrEventsFile)
-	s.testUnsealCommon(c, testPIN)
+	s.testUnsealCommon(c)
 }
 
 func (s *compatTestSuiteBase) testUnsealErrorMatchesCommon(c *C, pattern string) {
-	k, err := secboot.ReadSealedKeyObject(s.absPath("key"))
+	k, err := secboot_tpm2.ReadSealedKeyObject(s.absPath("key"))
 	c.Assert(err, IsNil)
 
-	_, _, err = k.UnsealFromTPM(s.TPM, "")
+	_, _, err = k.UnsealFromTPM(s.TPM)
 	c.Check(err, ErrorMatches, pattern)
 }
