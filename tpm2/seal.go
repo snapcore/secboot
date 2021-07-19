@@ -134,6 +134,21 @@ func computeSealedKeyDynamicAuthPolicy(tpm *tpm2.TPMContext, version uint32, alg
 	return policyData, nil
 }
 
+type sealKeyFileWriter struct {
+	fileSealedKeyObjectWriterCommon
+	path string
+}
+
+func (w *sealKeyFileWriter) Commit() error {
+	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return xerrors.Errorf("cannot create key data file: %w", err)
+	}
+	defer f.Close()
+
+	return w.write(f)
+}
+
 // KeyCreationParams provides arguments for SealKeyToTPM.
 type KeyCreationParams struct {
 	// PCRProfile defines the profile used to generate a PCR protection policy for the newly created sealed key file.
@@ -194,8 +209,6 @@ func SealKeyToExternalTPMStorageKey(tpmKey *tpm2.Public, key []byte, keyPath str
 		return nil, errors.New("PCRPolicyCounter must be tpm2.HandleNull when creating an importable sealed key")
 	}
 
-	succeeded := false
-
 	// Compute metadata.
 
 	var goAuthKey *ecdsa.PrivateKey
@@ -235,22 +248,7 @@ func SealKeyToExternalTPMStorageKey(tpmKey *tpm2.Public, key []byte, keyPath str
 		return nil, xerrors.Errorf("cannot compute dynamic authorization policy: %w", err)
 	}
 
-	// Clean up files on failure.
-	defer func() {
-		if succeeded {
-			return
-		}
-		os.Remove(keyPath)
-	}()
-
 	// Seal key
-
-	// Create the destination file
-	f, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return nil, xerrors.Errorf("cannot create key data file: %w", err)
-	}
-	defer f.Close()
 
 	// Create the sensitive data
 	sealedData, err := mu.MarshalToBytes(sealedData{Key: key, AuthPrivateKey: authKey})
@@ -280,20 +278,20 @@ func SealKeyToExternalTPMStorageKey(tpmKey *tpm2.Public, key []byte, keyPath str
 		return nil, xerrors.Errorf("cannot create duplication object: %w", err)
 	}
 
+	w := &sealKeyFileWriter{fileSealedKeyObjectWriterCommon{new(bytes.Buffer)}, keyPath}
+
 	// Marshal the entire object (sealed key object and auxiliary data) to disk
-	data := keyData{
+	sko := &SealedKeyObject{&keyData{
 		version:           currentMetadataVersion,
 		keyPrivate:        priv,
 		keyPublic:         pub,
 		importSymSeed:     importSymSeed,
 		staticPolicyData:  staticPolicyData,
-		dynamicPolicyData: dynamicPolicyData}
-
-	if err := data.write(f); err != nil {
+		dynamicPolicyData: dynamicPolicyData}}
+	if err := sko.WriteAtomic(w); err != nil {
 		return nil, xerrors.Errorf("cannot write key data file: %w", err)
 	}
 
-	succeeded = true
 	return authKey, nil
 }
 
@@ -450,15 +448,6 @@ func SealKeyToTPMMultiple(tpm *Connection, keys []*SealKeyRequest, params *KeyCr
 
 	// Seal each key.
 	for _, key := range keys {
-		// Create the destination file
-		f, err := os.OpenFile(key.Path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err != nil {
-			return nil, xerrors.Errorf("cannot create key data file %s: %w", key.Path, err)
-		}
-		// We'll close this at the end of this loop, but make sure it is closed if the function
-		// returns early
-		defer f.Close()
-
 		// Create the sensitive data
 		sealedData, err := mu.MarshalToBytes(sealedData{Key: key.Key, AuthPrivateKey: authKey})
 		if err != nil {
@@ -474,19 +463,19 @@ func SealKeyToTPMMultiple(tpm *Connection, keys []*SealKeyRequest, params *KeyCr
 			return nil, xerrors.Errorf("cannot create sealed data object for key: %w", err)
 		}
 
+		w := &sealKeyFileWriter{fileSealedKeyObjectWriterCommon{new(bytes.Buffer)}, key.Path}
+
 		// Marshal the entire object (sealed key object and auxiliary data) to disk
-		data := keyData{
+		sko := &SealedKeyObject{&keyData{
 			version:           currentMetadataVersion,
 			keyPrivate:        priv,
 			keyPublic:         pub,
 			staticPolicyData:  staticPolicyData,
-			dynamicPolicyData: dynamicPolicyData}
+			dynamicPolicyData: dynamicPolicyData}}
 
-		if err := data.write(f); err != nil {
+		if err := sko.WriteAtomic(w); err != nil {
 			return nil, xerrors.Errorf("cannot write key data file: %w", err)
 		}
-
-		f.Close()
 	}
 
 	succeeded = true
@@ -535,8 +524,8 @@ func updateKeyPCRProtectionPolicyCommon(tpm *tpm2.TPMContext, keys []*SealedKeyO
 	// Validate the primary key object
 	pcrPolicyCounterPub, err := primaryData.validate(tpm, authKey, session)
 	if err != nil {
-		if isKeyFileError(err) {
-			return InvalidKeyFileError{err.Error()}
+		if isKeyDataError(err) {
+			return InvalidKeyDataError{err.Error()}
 		}
 		// FIXME: Turn the missing lock NV index in to ErrTPMProvisioning
 		return xerrors.Errorf("cannot validate key data: %w", err)
@@ -545,8 +534,8 @@ func updateKeyPCRProtectionPolicyCommon(tpm *tpm2.TPMContext, keys []*SealedKeyO
 	// Validate secondary key objects and make sure they are related
 	for i, k := range keys[1:] {
 		if _, err := k.data.validate(tpm, nil, session); err != nil {
-			if isKeyFileError(err) {
-				return InvalidKeyFileError{fmt.Sprintf("%v (%d)", err.Error(), i)}
+			if isKeyDataError(err) {
+				return InvalidKeyDataError{fmt.Sprintf("%v (%d)", err.Error(), i)}
 			}
 			// FIXME: Turn the missing lock NV index in to ErrTPMProvisioning
 			return xerrors.Errorf("cannot validate related key data: %w", err)
@@ -557,7 +546,7 @@ func updateKeyPCRProtectionPolicyCommon(tpm *tpm2.TPMContext, keys []*SealedKeyO
 		// and dynamic authorization policy signing key, so this is the only check required to determine
 		// if 2 keys are related.
 		if !bytes.Equal(k.data.keyPublic.AuthPolicy, primaryData.keyPublic.AuthPolicy) {
-			return InvalidKeyFileError{fmt.Sprintf("key data at index %d is not related to the primary key data", i)}
+			return InvalidKeyDataError{fmt.Sprintf("key data at index %d is not related to the primary key data", i)}
 		}
 	}
 
@@ -572,13 +561,8 @@ func updateKeyPCRProtectionPolicyCommon(tpm *tpm2.TPMContext, keys []*SealedKeyO
 		return xerrors.Errorf("cannot compute dynamic authorization policy: %w", err)
 	}
 
-	// Atomically update the key data files
 	for _, k := range keys {
 		k.data.dynamicPolicyData = policyData
-
-		if err := k.data.writeToFileAtomic(k.path); err != nil {
-			return xerrors.Errorf("cannot write key data file: %v", err)
-		}
 	}
 
 	return nil
@@ -590,10 +574,10 @@ func updateKeyPCRProtectionPolicyCommon(tpm *tpm2.TPMContext, keys []*SealedKeyO
 //
 // If the policy update data file cannot be opened, a wrapped *os.PathError error will be returned.
 //
-// If validation of the sealed key data fails, a InvalidKeyFileError error will be returned.
+// If validation of the sealed key data fails, a InvalidKeyDataError error will be returned.
 //
-// On success, the sealed key data file is updated atomically with an updated authorization policy that includes a PCR policy
-// computed from the supplied PCRProtectionProfile.
+// On success, this SealedKeyObject will have an updated authorization policy that includes a PCR policy computed
+// from the supplied PCRProtectionProfile. It must be persisted using SealedKeyObject.WriteAtomic.
 func (k *SealedKeyObject) UpdatePCRProtectionPolicyV0(tpm *Connection, policyUpdatePath string, pcrProfile *PCRProtectionProfile) error {
 	policyUpdateFile, err := os.Open(policyUpdatePath)
 	if err != nil {
@@ -603,10 +587,10 @@ func (k *SealedKeyObject) UpdatePCRProtectionPolicyV0(tpm *Connection, policyUpd
 
 	policyUpdateData, err := decodeKeyPolicyUpdateData(policyUpdateFile)
 	if err != nil {
-		return InvalidKeyFileError{fmt.Sprintf("cannot read dynamic policy update data: %v", err)}
+		return InvalidKeyDataError{fmt.Sprintf("cannot read dynamic policy update data: %v", err)}
 	}
 	if policyUpdateData.version != k.data.version {
-		return InvalidKeyFileError{"mismatched metadata versions"}
+		return InvalidKeyDataError{"mismatched metadata versions"}
 	}
 
 	return updateKeyPCRProtectionPolicyCommon(tpm.TPMContext, []*SealedKeyObject{k}, policyUpdateData.authKey, pcrProfile, tpm.HmacSession())
@@ -616,7 +600,7 @@ func (k *SealedKeyObject) UpdatePCRProtectionPolicyV0(tpm *Connection, policyUpd
 // function only works with version 0 sealed key data objects. The caller must specify the path to the policy
 // update data file that was originally saved by SealKeyToTPM.
 //
-// If validation of the key data fails, a InvalidKeyFileError error will be returned.
+// If validation of the key data fails, a InvalidKeyDataError error will be returned.
 func (k *SealedKeyObject) RevokeOldPCRProtectionPoliciesV0(tpm *Connection, policyUpdatePath string) error {
 	policyUpdateFile, err := os.Open(policyUpdatePath)
 	if err != nil {
@@ -626,16 +610,16 @@ func (k *SealedKeyObject) RevokeOldPCRProtectionPoliciesV0(tpm *Connection, poli
 
 	policyUpdateData, err := decodeKeyPolicyUpdateData(policyUpdateFile)
 	if err != nil {
-		return InvalidKeyFileError{fmt.Sprintf("cannot read dynamic policy update data: %v", err)}
+		return InvalidKeyDataError{fmt.Sprintf("cannot read dynamic policy update data: %v", err)}
 	}
 	if policyUpdateData.version != k.data.version {
-		return InvalidKeyFileError{"mismatched metadata versions"}
+		return InvalidKeyDataError{"mismatched metadata versions"}
 	}
 
 	pcrPolicyCounterPub, err := k.data.validate(tpm.TPMContext, policyUpdateData.authKey, tpm.HmacSession())
 	if err != nil {
-		if isKeyFileError(err) {
-			return InvalidKeyFileError{err.Error()}
+		if isKeyDataError(err) {
+			return InvalidKeyDataError{err.Error()}
 		}
 		return xerrors.Errorf("cannot validate key data: %w", err)
 	}
@@ -657,14 +641,14 @@ func (k *SealedKeyObject) RevokeOldPCRProtectionPoliciesV0(tpm *Connection, poli
 // pcrProfile argument. In order to do this, the caller must also specify the private part of the authorization key
 // that was either returned by SealKeyToTPM or SealedKeyObject.UnsealFromTPM.
 //
-// If validation of the sealed key data fails, a InvalidKeyFileError error will be returned.
+// If validation of the sealed key data fails, a InvalidKeyDataError error will be returned.
 //
-// On success, the sealed key data file is updated atomically with an updated authorization policy that includes a PCR policy
-// computed from the supplied PCRProtectionProfile.
+// On success, this SealedKeyObject will have an updated authorization policy that includes a PCR policy computed
+// from the supplied PCRProtectionProfile. It must be persisted using SealedKeyObject.WriteAtomic.
 func (k *SealedKeyObject) UpdatePCRProtectionPolicy(tpm *Connection, authKey PolicyAuthKey, pcrProfile *PCRProtectionProfile) error {
 	ecdsaAuthKey, err := createECDSAPrivateKeyFromTPM(k.data.staticPolicyData.authPublicKey, tpm2.ECCParameter(authKey))
 	if err != nil {
-		return InvalidKeyFileError{fmt.Sprintf("cannot create auth key: %v", err)}
+		return InvalidKeyDataError{fmt.Sprintf("cannot create auth key: %v", err)}
 	}
 	return updateKeyPCRProtectionPolicyCommon(tpm.TPMContext, []*SealedKeyObject{k}, ecdsaAuthKey, pcrProfile, tpm.HmacSession())
 }
@@ -673,17 +657,17 @@ func (k *SealedKeyObject) UpdatePCRProtectionPolicy(tpm *Connection, authKey Pol
 // data was not created with a PCR policy counter, then this function does nothing. The caller must also specify
 // the private part of the authorization key that was either returned by SealKeyToTPM or SealedKeyObject.UnsealFromTPM.
 //
-// If validation of the key data fails, a InvalidKeyFileError error will be returned.
+// If validation of the key data fails, a InvalidKeyDataError error will be returned.
 func (k *SealedKeyObject) RevokeOldPCRProtectionPolicies(tpm *Connection, authKey PolicyAuthKey) error {
 	ecdsaAuthKey, err := createECDSAPrivateKeyFromTPM(k.data.staticPolicyData.authPublicKey, tpm2.ECCParameter(authKey))
 	if err != nil {
-		return InvalidKeyFileError{fmt.Sprintf("cannot create auth key: %v", err)}
+		return InvalidKeyDataError{fmt.Sprintf("cannot create auth key: %v", err)}
 	}
 
 	pcrPolicyCounterPub, err := k.data.validate(tpm.TPMContext, nil, tpm.HmacSession())
 	if err != nil {
-		if isKeyFileError(err) {
-			return InvalidKeyFileError{err.Error()}
+		if isKeyDataError(err) {
+			return InvalidKeyDataError{err.Error()}
 		}
 		return xerrors.Errorf("cannot validate key data: %w", err)
 	}
@@ -708,10 +692,11 @@ func (k *SealedKeyObject) RevokeOldPCRProtectionPolicies(tpm *Connection, authKe
 // profile defined by the pcrProfile argument. The keys must all be related (ie, they were created using
 // SealKeyToTPMMultiple). If any key in the supplied set is not related, an error will be returned.
 //
-// If validation of any sealed key object fails, a InvalidKeyFileError error will be returned.
+// If validation of any sealed key object fails, a InvalidKeyDataError error will be returned.
 //
-// On success, each sealed key data file is updated atomically with an updated authorization policy that includes a PCR
-// policy computed from the supplied PCRProtectionProfile.
+// On success, each of the supplied SealedKeyObjects will have an updated authorization policy that includes a
+// PCR policy computed from the supplied PCRProtectionProfile. They must be persisted using
+// SealedKeyObject.WriteAtomic.
 func UpdateKeyPCRProtectionPolicyMultiple(tpm *Connection, keys []*SealedKeyObject, authKey PolicyAuthKey, pcrProfile *PCRProtectionProfile) error {
 	if len(keys) == 0 {
 		return errors.New("no sealed keys supplied")
@@ -719,7 +704,7 @@ func UpdateKeyPCRProtectionPolicyMultiple(tpm *Connection, keys []*SealedKeyObje
 
 	ecdsaAuthKey, err := createECDSAPrivateKeyFromTPM(keys[0].data.staticPolicyData.authPublicKey, tpm2.ECCParameter(authKey))
 	if err != nil {
-		return InvalidKeyFileError{fmt.Sprintf("cannot create auth key: %v", err)}
+		return InvalidKeyDataError{fmt.Sprintf("cannot create auth key: %v", err)}
 	}
 
 	return updateKeyPCRProtectionPolicyCommon(tpm.TPMContext, keys, ecdsaAuthKey, pcrProfile, tpm.HmacSession())

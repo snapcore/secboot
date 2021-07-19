@@ -736,7 +736,7 @@ func TestUpdateKeyPCRProtectionPolicy(t *testing.T) {
 			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7).
 				ExtendPCR(tpm2.HashAlgorithmSHA256, 7, testutil.MakePCREventDigest(tpm2.HashAlgorithmSHA256, "foo")))
 
-		k, err := ReadSealedKeyObject(keyFile)
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
@@ -744,12 +744,7 @@ func TestUpdateKeyPCRProtectionPolicy(t *testing.T) {
 			t.Errorf("UpdatePCRProtectionPolicy failed: %v", err)
 		}
 
-		checkUnseal := func(keyFile string) {
-			k, err := ReadSealedKeyObject(keyFile)
-			if err != nil {
-				t.Fatalf("ReadSealedKeyObject failed: %v", err)
-			}
-
+		checkUnseal := func() {
 			unsealedKey, _, err := k.UnsealFromTPM(tpm)
 			if err != nil {
 				t.Errorf("Unseal failed: %v", err)
@@ -761,7 +756,7 @@ func TestUpdateKeyPCRProtectionPolicy(t *testing.T) {
 		}
 
 		// Check it unseals with the first branch
-		checkUnseal(keyFile)
+		checkUnseal()
 
 		// Modify the PCR state to match the second branch
 		if _, err := tpm.PCREvent(tpm.PCRHandleContext(7), []byte("foo"), nil); err != nil {
@@ -769,7 +764,7 @@ func TestUpdateKeyPCRProtectionPolicy(t *testing.T) {
 		}
 
 		// Check it unseals with the second branch
-		checkUnseal(keyFile)
+		checkUnseal()
 	}
 
 	t.Run("WithPCRPolicyCounter", func(t *testing.T) {
@@ -792,12 +787,7 @@ func TestRevokeOldPCRProtectionPolicies(t *testing.T) {
 	key := make([]byte, 64)
 	rand.Read(key)
 
-	checkUnseal := func(t *testing.T, keyFile string) {
-		k, err := ReadSealedKeyObject(keyFile)
-		if err != nil {
-			t.Fatalf("ReadSealedKeyObject failed: %v", err)
-		}
-
+	checkUnseal := func(t *testing.T, k *SealedKeyObject) {
 		unsealedKey, _, err := k.UnsealFromTPM(tpm)
 		if err != nil {
 			t.Errorf("Unseal failed: %v", err)
@@ -808,7 +798,7 @@ func TestRevokeOldPCRProtectionPolicies(t *testing.T) {
 		}
 	}
 
-	run := func(t *testing.T, params *KeyCreationParams, fn func(string)) {
+	run := func(t *testing.T, params *KeyCreationParams, fn func(*SealedKeyObject)) {
 		tmpDir, err := ioutil.TempDir("", "_TestUpdateKeyPCRProtectionPolicy_")
 		if err != nil {
 			t.Fatalf("Creating temporary directory failed: %v", err)
@@ -823,13 +813,7 @@ func TestRevokeOldPCRProtectionPolicies(t *testing.T) {
 		}
 		defer undefineKeyNVSpace(t, tpm, keyFile)
 
-		// Create a copy of the key file
-		backup := keyFile + ".bak"
-		if err := testutil.CopyFile(backup, keyFile, 0600); err != nil {
-			t.Errorf("CopyFile failed: %v", err)
-		}
-
-		k, err := ReadSealedKeyObject(keyFile)
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
@@ -837,9 +821,14 @@ func TestRevokeOldPCRProtectionPolicies(t *testing.T) {
 			t.Errorf("UpdatePCRProtectionPolicy failed: %v", err)
 		}
 
+		k2, err := ReadSealedKeyObjectFromFile(keyFile)
+		if err != nil {
+			t.Fatalf("ReadSealedKeyObject failed: %v", err)
+		}
+
 		// Check that both files unseal
-		checkUnseal(t, keyFile)
-		checkUnseal(t, backup)
+		checkUnseal(t, k)
+		checkUnseal(t, k2)
 
 		// Revoke old policies
 		if err := k.RevokeOldPCRProtectionPolicies(tpm, authKey); err != nil {
@@ -847,28 +836,23 @@ func TestRevokeOldPCRProtectionPolicies(t *testing.T) {
 		}
 
 		// Check current file unseals ok
-		checkUnseal(t, keyFile)
-		fn(backup)
+		checkUnseal(t, k)
+		fn(k2)
 	}
 
 	t.Run("WithPCRPolicyCounter", func(t *testing.T) {
-		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: 0x01810000}, func(backup string) {
-			k, err := ReadSealedKeyObject(backup)
-			if err != nil {
-				t.Fatalf("ReadSealedKeyObject failed: %v", err)
-			}
-
-			_, _, err = k.UnsealFromTPM(tpm)
-			if _, ok := err.(InvalidKeyFileError); !ok ||
-				err.Error() != "invalid key data file: cannot complete authorization policy assertions: the PCR policy has been revoked" {
+		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: 0x01810000}, func(k *SealedKeyObject) {
+			_, _, err := k.UnsealFromTPM(tpm)
+			if _, ok := err.(InvalidKeyDataError); !ok ||
+				err.Error() != "invalid key data: cannot complete authorization policy assertions: the PCR policy has been revoked" {
 				t.Errorf("Unexpected error: %v", err)
 			}
 		})
 	})
 
 	t.Run("WithoutPCRPolicyCounter", func(t *testing.T) {
-		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: tpm2.HandleNull}, func(backup string) {
-			checkUnseal(t, backup)
+		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: tpm2.HandleNull}, func(k *SealedKeyObject) {
+			checkUnseal(t, k)
 		})
 	})
 }
@@ -909,7 +893,7 @@ func TestUpdateKeyPCRProtectionPolicyMultiple(t *testing.T) {
 
 	var ks []*SealedKeyObject
 	for _, key := range keys {
-		k, err := ReadSealedKeyObject(key.Path)
+		k, err := ReadSealedKeyObjectFromFile(key.Path)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
@@ -920,12 +904,7 @@ func TestUpdateKeyPCRProtectionPolicyMultiple(t *testing.T) {
 		t.Errorf("UpdateKeyPCRProtectionPolicy failed: %v", err)
 	}
 
-	checkUnseal := func(t *testing.T, keyFile string) {
-		k, err := ReadSealedKeyObject(keyFile)
-		if err != nil {
-			t.Fatalf("ReadSealedKeyObject failed: %v", err)
-		}
-
+	checkUnseal := func(t *testing.T, k *SealedKeyObject) {
 		unsealedKey, _, err := k.UnsealFromTPM(tpm)
 		if err != nil {
 			t.Errorf("Unseal failed: %v", err)
@@ -937,8 +916,8 @@ func TestUpdateKeyPCRProtectionPolicyMultiple(t *testing.T) {
 	}
 
 	// Check that the keys unseal with the first branch
-	for _, key := range keys {
-		checkUnseal(t, key.Path)
+	for _, k := range ks {
+		checkUnseal(t, k)
 	}
 
 	// Modify the PCR state to match the second branch
@@ -947,8 +926,8 @@ func TestUpdateKeyPCRProtectionPolicyMultiple(t *testing.T) {
 	}
 
 	// Check that the keys unseal with the second branch
-	for _, key := range keys {
-		checkUnseal(t, key.Path)
+	for _, k := range ks {
+		checkUnseal(t, k)
 	}
 }
 
@@ -988,7 +967,7 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated1(t *testing.T) {
 		}
 		defer undefineKeyNVSpace(t, tpm, keyFile)
 
-		k, err := ReadSealedKeyObject(keyFile)
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
@@ -1029,7 +1008,7 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SealKeyToTPM failed: %v", err)
 	}
-	k, err := ReadSealedKeyObject(keyFile)
+	k, err := ReadSealedKeyObjectFromFile(keyFile)
 	if err != nil {
 		t.Fatalf("ReadSealedKeyObject failed: %v", err)
 	}
@@ -1043,7 +1022,7 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated2(t *testing.T) {
 			t.Fatalf("SealKeyToTPM failed: %v", err)
 		}
 
-		k, err := ReadSealedKeyObject(keyFile)
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
