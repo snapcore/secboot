@@ -17,7 +17,7 @@
  *
  */
 
-package secboot_test
+package tpm2_test
 
 import (
 	"bytes"
@@ -36,9 +36,10 @@ import (
 
 	"github.com/canonical/go-tpm2"
 	"github.com/canonical/go-tpm2/mu"
-	. "github.com/snapcore/secboot"
+
 	"github.com/snapcore/secboot/internal/tcg"
 	"github.com/snapcore/secboot/internal/testutil"
+	. "github.com/snapcore/secboot/tpm2"
 )
 
 func getTestPCRProfile() *PCRProtectionProfile {
@@ -58,7 +59,7 @@ func TestSealKeyToTPM(t *testing.T) {
 	key := make([]byte, 64)
 	rand.Read(key)
 
-	run := func(t *testing.T, tpm *TPMConnection, params *KeyCreationParams) (authKeyBytes []byte) {
+	run := func(t *testing.T, tpm *Connection, params *KeyCreationParams) (authKeyBytes []byte) {
 		tmpDir, err := ioutil.TempDir("", "_TestSealKeyToTPM_")
 		if err != nil {
 			t.Fatalf("Creating temporary directory failed: %v", err)
@@ -93,7 +94,7 @@ func TestSealKeyToTPM(t *testing.T) {
 	})
 
 	t.Run("SealAfterProvision", func(t *testing.T) {
-		// SealKeyToTPM behaves slightly different if called immediately after EnsureProvisioned with the same TPMConnection
+		// SealKeyToTPM behaves slightly different if called immediately after EnsureProvisioned with the same Connection
 		tpm := openTPMForTesting(t)
 		defer closeTPM(t, tpm)
 		if err := tpm.EnsureProvisioned(ProvisionModeFull, nil); err != nil {
@@ -270,7 +271,7 @@ func TestSealKeyToTPMMultiple(t *testing.T) {
 	key := make([]byte, 64)
 	rand.Read(key)
 
-	run := func(t *testing.T, tpm *TPMConnection, n int, params *KeyCreationParams) (authKeyBytes TPMPolicyAuthKey) {
+	run := func(t *testing.T, tpm *Connection, n int, params *KeyCreationParams) (authKeyBytes PolicyAuthKey) {
 		tmpDir, err := ioutil.TempDir("", "_TestSealKeyToTPM_")
 		if err != nil {
 			t.Fatalf("Creating temporary directory failed: %v", err)
@@ -316,7 +317,7 @@ func TestSealKeyToTPMMultiple(t *testing.T) {
 	})
 
 	t.Run("SealAfterProvision", func(t *testing.T) {
-		// SealKeyToTPM behaves slightly different if called immediately after EnsureProvisioned with the same TPMConnection
+		// SealKeyToTPM behaves slightly different if called immediately after EnsureProvisioned with the same Connection
 		tpm := openTPMForTesting(t)
 		defer closeTPM(t, tpm)
 		if err := tpm.EnsureProvisioned(ProvisionModeFull, nil); err != nil {
@@ -715,36 +716,79 @@ func TestUpdateKeyPCRProtectionPolicy(t *testing.T) {
 	key := make([]byte, 64)
 	rand.Read(key)
 
-	prepare := func(t *testing.T, params *KeyCreationParams) (path string, authKey TPMPolicyAuthKey, cleanup func()) {
+	run := func(t *testing.T, params *KeyCreationParams) {
 		tmpDir, err := ioutil.TempDir("", "_TestUpdateKeyPCRProtectionPolicy_")
 		if err != nil {
 			t.Fatalf("Creating temporary directory failed: %v", err)
 		}
+		defer os.RemoveAll(tmpDir)
 
 		keyFile := filepath.Join(tmpDir, "keydata")
 
-		authPrivateKey, err := SealKeyToTPM(tpm, key, keyFile, params)
+		authKey, err := SealKeyToTPM(tpm, key, keyFile, params)
 		if err != nil {
 			t.Errorf("SealKeyToTPM failed: %v", err)
 		}
-		return keyFile, authPrivateKey, func() {
-			undefineKeyNVSpace(t, tpm, keyFile)
-			os.RemoveAll(tmpDir)
-		}
-	}
-	update := func(t *testing.T, keyFile string, authKey TPMPolicyAuthKey, profile *PCRProtectionProfile) {
-		if err := UpdateKeyPCRProtectionPolicy(tpm, keyFile, authKey, profile); err != nil {
-			t.Errorf("UpdateKeyPCRProtectionPolicy failed: %v", err)
-		}
-	}
+		defer undefineKeyNVSpace(t, tpm, keyFile)
 
-	checkUnseal := func(t *testing.T, keyFile string) {
-		k, err := ReadSealedKeyObject(keyFile)
+		profile := NewPCRProtectionProfile().AddProfileOR(
+			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7),
+			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7).
+				ExtendPCR(tpm2.HashAlgorithmSHA256, 7, testutil.MakePCREventDigest(tpm2.HashAlgorithmSHA256, "foo")))
+
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
+		if err := k.UpdatePCRProtectionPolicy(tpm, authKey, profile); err != nil {
+			t.Errorf("UpdatePCRProtectionPolicy failed: %v", err)
+		}
 
-		unsealedKey, _, err := k.UnsealFromTPM(tpm, "")
+		checkUnseal := func() {
+			unsealedKey, _, err := k.UnsealFromTPM(tpm)
+			if err != nil {
+				t.Errorf("Unseal failed: %v", err)
+			}
+
+			if !bytes.Equal(unsealedKey, key) {
+				t.Errorf("Unexpected key")
+			}
+		}
+
+		// Check it unseals with the first branch
+		checkUnseal()
+
+		// Modify the PCR state to match the second branch
+		if _, err := tpm.PCREvent(tpm.PCRHandleContext(7), []byte("foo"), nil); err != nil {
+			t.Errorf("PCREvent failed: %v", err)
+		}
+
+		// Check it unseals with the second branch
+		checkUnseal()
+	}
+
+	t.Run("WithPCRPolicyCounter", func(t *testing.T) {
+		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: 0x01810000})
+	})
+
+	t.Run("WithoutPCRPolicyCounter", func(t *testing.T) {
+		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: tpm2.HandleNull})
+	})
+}
+
+func TestRevokeOldPCRProtectionPolicies(t *testing.T) {
+	tpm, _ := openTPMSimulatorForTesting(t)
+	defer closeTPM(t, tpm)
+
+	if err := tpm.EnsureProvisioned(ProvisionModeFull, nil); err != nil {
+		t.Errorf("Failed to provision TPM for test: %v", err)
+	}
+
+	key := make([]byte, 64)
+	rand.Read(key)
+
+	checkUnseal := func(t *testing.T, k *SealedKeyObject) {
+		unsealedKey, _, err := k.UnsealFromTPM(tpm)
 		if err != nil {
 			t.Errorf("Unseal failed: %v", err)
 		}
@@ -754,81 +798,64 @@ func TestUpdateKeyPCRProtectionPolicy(t *testing.T) {
 		}
 	}
 
-	t.Run("WithPCRPolicyCounter", func(t *testing.T) {
-		// Create initial keyfile
-		keyFile, authKey, cleanup := prepare(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: 0x01810000})
-		defer cleanup()
+	run := func(t *testing.T, params *KeyCreationParams, fn func(*SealedKeyObject)) {
+		tmpDir, err := ioutil.TempDir("", "_TestUpdateKeyPCRProtectionPolicy_")
+		if err != nil {
+			t.Fatalf("Creating temporary directory failed: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
 
-		// Create a copy of initial file
-		keyFile2 := filepath.Join(filepath.Dir(keyFile), "keydata2")
-		if err := testutil.CopyFile(keyFile2, keyFile, 0600); err != nil {
-			t.Errorf("CopyFile failed: %v", err)
+		keyFile := filepath.Join(tmpDir, "keydata")
+
+		authKey, err := SealKeyToTPM(tpm, key, keyFile, params)
+		if err != nil {
+			t.Errorf("SealKeyToTPM failed: %v", err)
+		}
+		defer undefineKeyNVSpace(t, tpm, keyFile)
+
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
+		if err != nil {
+			t.Fatalf("ReadSealedKeyObject failed: %v", err)
+		}
+		if err := k.UpdatePCRProtectionPolicy(tpm, authKey, params.PCRProfile); err != nil {
+			t.Errorf("UpdatePCRProtectionPolicy failed: %v", err)
 		}
 
-		// Update policy with 2 branches
-		newProfile := NewPCRProtectionProfile().AddProfileOR(
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7),
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7).
-				ExtendPCR(tpm2.HashAlgorithmSHA256, 7, testutil.MakePCREventDigest(tpm2.HashAlgorithmSHA256, "foo")))
-		update(t, keyFile, authKey, newProfile)
-
-		// Check that unseal fails with the backup file
-		k, err := ReadSealedKeyObject(keyFile2)
+		k2, err := ReadSealedKeyObjectFromFile(keyFile)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
 
-		if _, _, err := k.UnsealFromTPM(tpm, ""); err == nil ||
-			err.Error() != "invalid key data file: cannot complete authorization policy assertions: the PCR policy has been revoked" {
-			t.Errorf("Unexpected error: %v", err)
+		// Check that both files unseal
+		checkUnseal(t, k)
+		checkUnseal(t, k2)
+
+		// Revoke old policies
+		if err := k.RevokeOldPCRProtectionPolicies(tpm, authKey); err != nil {
+			t.Errorf("RevokeOldPCRProtectionPolicies failed: %v", err)
 		}
 
-		// Check it unseals with the first branch
-		checkUnseal(t, keyFile)
+		// Check current file unseals ok
+		checkUnseal(t, k)
+		fn(k2)
+	}
 
-		// Modify the PCR state to match the second branch
-		if _, err := tpm.PCREvent(tpm.PCRHandleContext(7), []byte("foo"), nil); err != nil {
-			t.Errorf("PCREvent failed: %v", err)
-		}
-
-		// Check it unseals with the second branch
-		checkUnseal(t, keyFile)
+	t.Run("WithPCRPolicyCounter", func(t *testing.T) {
+		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: 0x01810000}, func(k *SealedKeyObject) {
+			_, _, err := k.UnsealFromTPM(tpm)
+			if _, ok := err.(InvalidKeyDataError); !ok ||
+				err.Error() != "invalid key data: cannot complete authorization policy assertions: the PCR policy has been revoked" {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
 	})
 
 	t.Run("WithoutPCRPolicyCounter", func(t *testing.T) {
-		// Create initial keyfile
-		keyFile, authKey, cleanup := prepare(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: tpm2.HandleNull})
-		defer cleanup()
-
-		// Create a copy of initial file
-		keyFile2 := filepath.Join(filepath.Dir(keyFile), "keydata2")
-		if err := testutil.CopyFile(keyFile2, keyFile, 0600); err != nil {
-			t.Errorf("CopyFile failed: %v", err)
-		}
-
-		// Update policy with 2 branches
-		newProfile := NewPCRProtectionProfile().AddProfileOR(
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7),
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7).
-				ExtendPCR(tpm2.HashAlgorithmSHA256, 7, testutil.MakePCREventDigest(tpm2.HashAlgorithmSHA256, "foo")))
-		update(t, keyFile, authKey, newProfile)
-
-		// Check that the backup file still works
-		checkUnseal(t, keyFile2)
-
-		// Check it unseals with the first branch
-		checkUnseal(t, keyFile)
-
-		// Modify the PCR state to match the second branch
-		if _, err := tpm.PCREvent(tpm.PCRHandleContext(7), []byte("foo"), nil); err != nil {
-			t.Errorf("PCREvent failed: %v", err)
-		}
-
-		// Check it unseals with the second branch
-		checkUnseal(t, keyFile)
+		run(t, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: tpm2.HandleNull}, func(k *SealedKeyObject) {
+			checkUnseal(t, k)
+		})
 	})
 }
-
 func TestUpdateKeyPCRProtectionPolicyMultiple(t *testing.T) {
 	tpm, _ := openTPMSimulatorForTesting(t)
 	defer closeTPM(t, tpm)
@@ -840,45 +867,45 @@ func TestUpdateKeyPCRProtectionPolicyMultiple(t *testing.T) {
 	key := make([]byte, 64)
 	rand.Read(key)
 
-	prepare := func(t *testing.T, n int, params *KeyCreationParams) (paths []string, authKey TPMPolicyAuthKey, cleanup func()) {
-		tmpDir, err := ioutil.TempDir("", "_TestUpdateKeyPCRProtectionPolicyMultiple_")
-		if err != nil {
-			t.Fatalf("Creating temporary directory failed: %v", err)
-		}
+	tmpDir, err := ioutil.TempDir("", "_TestUpdateKeyPCRProtectionPolicyMultiple_")
+	if err != nil {
+		t.Fatalf("Creating temporary directory failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
 
-		var keys []*SealKeyRequest
-		for i := 0; i < n; i++ {
-			keys = append(keys, &SealKeyRequest{Key: key, Path: filepath.Join(tmpDir, fmt.Sprintf("keydata%d", i))})
-		}
-
-		authPrivateKey, err := SealKeyToTPMMultiple(tpm, keys, params)
-		if err != nil {
-			t.Errorf("SealKeyToTPMMultiple failed: %v", err)
-		}
-
-		for _, k := range keys {
-			paths = append(paths, k.Path)
-		}
-
-		return paths, authPrivateKey, func() {
-			undefineKeyNVSpace(t, tpm, keys[0].Path)
-			os.RemoveAll(tmpDir)
-		}
+	// Create initial keyfiles
+	var keys []*SealKeyRequest
+	for i := 0; i < 2; i++ {
+		keys = append(keys, &SealKeyRequest{Key: key, Path: filepath.Join(tmpDir, fmt.Sprintf("keydata%d", i))})
 	}
 
-	update := func(t *testing.T, keyFiles []string, authKey TPMPolicyAuthKey, profile *PCRProtectionProfile) {
-		if err := UpdateKeyPCRProtectionPolicyMultiple(tpm, keyFiles, authKey, profile); err != nil {
-			t.Errorf("UpdateKeyPCRProtectionPolicy failed: %v", err)
-		}
+	authKey, err := SealKeyToTPMMultiple(tpm, keys, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: 0x01810000})
+	if err != nil {
+		t.Errorf("SealKeyToTPMMultiple failed: %v", err)
 	}
+	defer undefineKeyNVSpace(t, tpm, keys[0].Path)
 
-	checkUnseal := func(t *testing.T, keyFile string) {
-		k, err := ReadSealedKeyObject(keyFile)
+	// Update policy with 2 branches
+	profile := NewPCRProtectionProfile().AddProfileOR(
+		NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7),
+		NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7).
+			ExtendPCR(tpm2.HashAlgorithmSHA256, 7, testutil.MakePCREventDigest(tpm2.HashAlgorithmSHA256, "foo")))
+
+	var ks []*SealedKeyObject
+	for _, key := range keys {
+		k, err := ReadSealedKeyObjectFromFile(key.Path)
 		if err != nil {
 			t.Fatalf("ReadSealedKeyObject failed: %v", err)
 		}
+		ks = append(ks, k)
+	}
 
-		unsealedKey, _, err := k.UnsealFromTPM(tpm, "")
+	if err := UpdateKeyPCRProtectionPolicyMultiple(tpm, ks, authKey, profile); err != nil {
+		t.Errorf("UpdateKeyPCRProtectionPolicy failed: %v", err)
+	}
+
+	checkUnseal := func(t *testing.T, k *SealedKeyObject) {
+		unsealedKey, _, err := k.UnsealFromTPM(tpm)
 		if err != nil {
 			t.Errorf("Unseal failed: %v", err)
 		}
@@ -888,99 +915,20 @@ func TestUpdateKeyPCRProtectionPolicyMultiple(t *testing.T) {
 		}
 	}
 
-	t.Run("WithPCRPolicyCounter", func(t *testing.T) {
-		// Create initial keyfiles
-		keyFiles, authKey, cleanup := prepare(t, 2, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: 0x01810000})
-		defer cleanup()
+	// Check that the keys unseal with the first branch
+	for _, k := range ks {
+		checkUnseal(t, k)
+	}
 
-		// Create a copy of initial files
-		var backups []string
-		for _, kf := range keyFiles {
-			bf := kf + ".bak"
-			if err := testutil.CopyFile(bf, kf, 0600); err != nil {
-				t.Errorf("CopyFile failed: %v", err)
-			}
-			backups = append(backups, bf)
-		}
+	// Modify the PCR state to match the second branch
+	if _, err := tpm.PCREvent(tpm.PCRHandleContext(7), []byte("foo"), nil); err != nil {
+		t.Errorf("PCREvent failed: %v", err)
+	}
 
-		// Update policy with 2 branches
-		newProfile := NewPCRProtectionProfile().AddProfileOR(
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7),
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7).
-				ExtendPCR(tpm2.HashAlgorithmSHA256, 7, testutil.MakePCREventDigest(tpm2.HashAlgorithmSHA256, "foo")))
-		update(t, keyFiles, authKey, newProfile)
-
-		// Check that unseal fails with the backup files
-		for _, bf := range backups {
-			k, err := ReadSealedKeyObject(bf)
-			if err != nil {
-				t.Fatalf("ReadSealedKeyObject failed: %v", err)
-			}
-
-			if _, _, err := k.UnsealFromTPM(tpm, ""); err == nil ||
-				err.Error() != "invalid key data file: cannot complete authorization policy assertions: the PCR policy has been revoked" {
-				t.Errorf("Unexpected error: %v", err)
-			}
-		}
-
-		// Check that the keys unseal with the first branch
-		for _, k := range keyFiles {
-			checkUnseal(t, k)
-		}
-
-		// Modify the PCR state to match the second branch
-		if _, err := tpm.PCREvent(tpm.PCRHandleContext(7), []byte("foo"), nil); err != nil {
-			t.Errorf("PCREvent failed: %v", err)
-		}
-
-		// Check that the keys unseal with the second branch
-		for _, k := range keyFiles {
-			checkUnseal(t, k)
-		}
-	})
-
-	t.Run("WithoutPCRPolicyCounter", func(t *testing.T) {
-		// Create initial keyfile
-		keyFiles, authKey, cleanup := prepare(t, 2, &KeyCreationParams{PCRProfile: getTestPCRProfile(), PCRPolicyCounterHandle: tpm2.HandleNull})
-		defer cleanup()
-
-		// Create a copy of initial files
-		var backups []string
-		for _, kf := range keyFiles {
-			bf := kf + ".bak"
-			if err := testutil.CopyFile(bf, kf, 0600); err != nil {
-				t.Errorf("CopyFile failed: %v", err)
-			}
-			backups = append(backups, bf)
-		}
-
-		// Update policy with 2 branches
-		newProfile := NewPCRProtectionProfile().AddProfileOR(
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7),
-			NewPCRProtectionProfile().AddPCRValueFromTPM(tpm2.HashAlgorithmSHA256, 7).
-				ExtendPCR(tpm2.HashAlgorithmSHA256, 7, testutil.MakePCREventDigest(tpm2.HashAlgorithmSHA256, "foo")))
-		update(t, keyFiles, authKey, newProfile)
-
-		// Check that unseal still succeeds with the backup files
-		for _, bf := range backups {
-			checkUnseal(t, bf)
-		}
-
-		// Check that the keys unseal with the first branch
-		for _, k := range keyFiles {
-			checkUnseal(t, k)
-		}
-
-		// Modify the PCR state to match the second branch
-		if _, err := tpm.PCREvent(tpm.PCRHandleContext(7), []byte("foo"), nil); err != nil {
-			t.Errorf("PCREvent failed: %v", err)
-		}
-
-		// Check that the keys unseal with the second branch
-		for _, k := range keyFiles {
-			checkUnseal(t, k)
-		}
-	})
+	// Check that the keys unseal with the second branch
+	for _, k := range ks {
+		checkUnseal(t, k)
+	}
 }
 
 func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated1(t *testing.T) {
@@ -1008,7 +956,7 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated1(t *testing.T) {
 		t.Fatalf("GenerateKey failed: %v", err)
 	}
 
-	var keyFiles []string
+	var keys []*SealedKeyObject
 	for i := 0; i < 3; i++ {
 		keyFile := filepath.Join(tmpDir, fmt.Sprintf("keydata%d", i))
 		if _, err := SealKeyToTPM(tpm, key, keyFile, &KeyCreationParams{
@@ -1018,11 +966,16 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated1(t *testing.T) {
 			t.Fatalf("SealKeyToTPM failed: %v", err)
 		}
 		defer undefineKeyNVSpace(t, tpm, keyFile)
-		keyFiles = append(keyFiles, keyFile)
+
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
+		if err != nil {
+			t.Fatalf("ReadSealedKeyObject failed: %v", err)
+		}
+		keys = append(keys, k)
 	}
 
-	if err := UpdateKeyPCRProtectionPolicyMultiple(tpm, keyFiles, authKey.D.Bytes(), nil); err == nil ||
-		!strings.HasSuffix(err.Error(), "keydata1 is not a related key file") {
+	if err := UpdateKeyPCRProtectionPolicyMultiple(tpm, keys, authKey.D.Bytes(), nil); err == nil ||
+		!strings.HasSuffix(err.Error(), "key data at index 0 is not related to the primary key data") {
 		t.Errorf("Unexpected error: %v", err)
 	}
 }
@@ -1046,7 +999,7 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated2(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	var keyFiles []string
+	var keys []*SealedKeyObject
 
 	keyFile := filepath.Join(tmpDir, "keyfile0")
 	authKey, err := SealKeyToTPM(tpm, key, keyFile, &KeyCreationParams{
@@ -1055,7 +1008,11 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SealKeyToTPM failed: %v", err)
 	}
-	keyFiles = append(keyFiles, keyFile)
+	k, err := ReadSealedKeyObjectFromFile(keyFile)
+	if err != nil {
+		t.Fatalf("ReadSealedKeyObject failed: %v", err)
+	}
+	keys = append(keys, k)
 
 	for i := 1; i < 3; i++ {
 		keyFile := filepath.Join(tmpDir, fmt.Sprintf("keydata%d", i))
@@ -1064,11 +1021,16 @@ func TestUpdateKeyPCRProtectionPolicyMultipleUnrelated2(t *testing.T) {
 			PCRPolicyCounterHandle: tpm2.HandleNull}); err != nil {
 			t.Fatalf("SealKeyToTPM failed: %v", err)
 		}
-		keyFiles = append(keyFiles, keyFile)
+
+		k, err := ReadSealedKeyObjectFromFile(keyFile)
+		if err != nil {
+			t.Fatalf("ReadSealedKeyObject failed: %v", err)
+		}
+		keys = append(keys, k)
 	}
 
-	if err := UpdateKeyPCRProtectionPolicyMultiple(tpm, keyFiles, authKey, nil); err == nil ||
-		!strings.HasSuffix(err.Error(), "keydata1 is not a related key file") {
+	if err := UpdateKeyPCRProtectionPolicyMultiple(tpm, keys, authKey, nil); err == nil ||
+		!strings.HasSuffix(err.Error(), "key data at index 0 is not related to the primary key data") {
 		t.Errorf("Unexpected error: %v", err)
 	}
 }
