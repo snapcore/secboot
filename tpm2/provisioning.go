@@ -21,7 +21,6 @@ package tpm2
 
 import (
 	"errors"
-	"fmt"
 	"os"
 
 	"github.com/canonical/go-tpm2"
@@ -104,7 +103,7 @@ func selectSrkTemplate(tpm *tpm2.TPMContext, session tpm2.SessionContext) *tpm2.
 		return tcg.SRKTemplate
 	}
 
-	nvPub, _, err := tpm.NVReadPublic(nv, session.IncludeAttrs(tpm2.AttrAudit))
+	nvPub, _, err := tpm.NVReadPublic(nv)
 	if err != nil {
 		return tcg.SRKTemplate
 	}
@@ -146,11 +145,11 @@ func storeSrkTemplate(tpm *tpm2.TPMContext, template *tpm2.Public, session tpm2.
 		return xerrors.Errorf("cannot define NV index: %w", err)
 	}
 
-	if err := tpm.NVWrite(nv, nv, tmplB, 0, session); err != nil {
+	if err := tpm.NVWrite(nv, nv, tmplB, 0, nil); err != nil {
 		return xerrors.Errorf("cannot write NV index: %w", err)
 	}
 
-	if err := tpm.NVWriteLock(nv, nv, session); err != nil {
+	if err := tpm.NVWriteLock(nv, nv, nil); err != nil {
 		return xerrors.Errorf("cannot write lock NV index: %w", err)
 	}
 
@@ -178,7 +177,7 @@ func removeStoredSrkTemplate(tpm *tpm2.TPMContext, session tpm2.SessionContext) 
 func (t *Connection) ensureProvisionedInternal(mode ProvisionMode, newLockoutAuth []byte, srkTemplate *tpm2.Public, useExistingSrkTemplate bool) error {
 	session := t.HmacSession()
 
-	props, err := t.GetCapabilityTPMProperties(tpm2.PropertyPermanent, 1, session.IncludeAttrs(tpm2.AttrAudit))
+	props, err := t.GetCapabilityTPMProperties(tpm2.PropertyPermanent, 1)
 	if err != nil {
 		return xerrors.Errorf("cannot fetch permanent properties: %w", err)
 	}
@@ -216,10 +215,6 @@ func (t *Connection) ensureProvisionedInternal(mode ProvisionMode, newLockoutAut
 	// Reinitialize the connection, which creates a new session that's salted with a value protected with the newly provisioned EK.
 	// This will have a symmetric algorithm for parameter encryption during HierarchyChangeAuth.
 	if err := t.init(); err != nil {
-		var verifyErr verificationError
-		if xerrors.As(err, &verifyErr) {
-			return TPMVerificationError{fmt.Sprintf("cannot reinitialize TPM connection after provisioning endorsement key: %v", err)}
-		}
 		return xerrors.Errorf("cannot reinitialize TPM connection after provisioning endorsement key: %w", err)
 	}
 	session = t.HmacSession()
@@ -252,7 +247,7 @@ func (t *Connection) ensureProvisionedInternal(mode ProvisionMode, newLockoutAut
 	t.provisionedSrk = srk
 
 	if mode == ProvisionModeWithoutLockout {
-		props, err := t.GetCapabilityTPMProperties(tpm2.PropertyPermanent, 1, session.IncludeAttrs(tpm2.AttrAudit))
+		props, err := t.GetCapabilityTPMProperties(tpm2.PropertyPermanent, 1)
 		if err != nil {
 			return xerrors.Errorf("cannot fetch permanent properties to determine if lockout hierarchy is required: %w", err)
 		}
@@ -264,7 +259,7 @@ func (t *Connection) ensureProvisionedInternal(mode ProvisionMode, newLockoutAut
 			return ErrTPMProvisioningRequiresLockout
 		}
 
-		props, err = t.GetCapabilityTPMProperties(tpm2.PropertyMaxAuthFail, 3, session.IncludeAttrs(tpm2.AttrAudit))
+		props, err = t.GetCapabilityTPMProperties(tpm2.PropertyMaxAuthFail, 3)
 		if err != nil {
 			return xerrors.Errorf("cannot fetch DA parameters to determine if lockout hierarchy is required: %w", err)
 		}
