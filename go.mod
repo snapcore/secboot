@@ -9,8 +9,8 @@ require (
 	github.com/canonical/go-tpm2 v1.3.0
 	github.com/canonical/tcglog-parser v0.0.0-20230929123437-16b3d8d08691
 	github.com/snapcore/snapd v0.0.0-20220714152900-4a1f4c93fc85
-	golang.org/x/crypto v0.9.0
-	golang.org/x/sys v0.8.0
+	golang.org/x/crypto v0.21.0
+	golang.org/x/sys v0.18.0
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
 	gopkg.in/yaml.v2 v2.3.0
@@ -22,7 +22,7 @@ require (
 	github.com/kr/pretty v0.2.2-0.20200810074440-814ac30b4b18 // indirect
 	github.com/kr/text v0.1.0 // indirect
 	github.com/snapcore/go-gettext v0.0.0-20191107141714-82bbea49e785 // indirect
-	golang.org/x/net v0.10.0 // indirect
+	golang.org/x/net v0.21.0 // indirect
 	gopkg.in/retry.v1 v1.0.3 // indirect
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637 // indirect
 )
