@@ -43,12 +43,12 @@ type (
 	ProtectedKeys = protectedKeys
 )
 
-func (o *Argon2Options) KdfParams(keyLen uint32) (*KdfParams, error) {
-	return o.kdfParams(keyLen)
+func (o *Argon2Options) KdfParams(defaultTargetDuration time.Duration, keyLen uint32) (*KdfParams, error) {
+	return o.kdfParams(defaultTargetDuration, keyLen)
 }
 
-func (o *PBKDF2Options) KdfParams(keyLen uint32) (*KdfParams, error) {
-	return o.kdfParams(keyLen)
+func (o *PBKDF2Options) KdfParams(defaultTargetDuration time.Duration, keyLen uint32) (*KdfParams, error) {
+	return o.kdfParams(defaultTargetDuration, keyLen)
 }
 
 func MockLUKS2Activate(fn func(string, string, []byte, int) error) (restore func()) {
