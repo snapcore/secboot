@@ -21,11 +21,10 @@ package secboot
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"runtime"
 	"time"
-
-	"golang.org/x/xerrors"
 
 	"github.com/snapcore/secboot/internal/argon2"
 )
@@ -115,7 +114,7 @@ func (o *KDFOptions) deriveCostParams(keyLen int, kdf KDF) (*KDFCostParams, erro
 				Threads:   params.Threads})
 		})
 		if err != nil {
-			return nil, xerrors.Errorf("cannot benchmark KDF: %w", err)
+			return nil, fmt.Errorf("cannot benchmark KDF: %w", err)
 		}
 
 		return &KDFCostParams{

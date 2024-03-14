@@ -34,12 +34,11 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 	cryptobyte_asn1 "golang.org/x/crypto/cryptobyte/asn1"
 	"golang.org/x/crypto/hkdf"
-	"golang.org/x/xerrors"
 )
 
 const (
 	kdfType                            = "argon2i"
-	nilHash                    hashAlg = 0
+	nilHash                    HashAlg = 0
 	passphraseKeyLen                   = 32
 	passphraseEncryptionKeyLen         = 32
 	passphraseEncryption               = "aes-cfb"
@@ -185,24 +184,28 @@ type KeyDataReader interface {
 	ReadableName() string
 }
 
-// hashAlg corresponds to a digest algorithm.
-type hashAlg crypto.Hash
+// HashAlg provides an abstraction for crypto.Hash that can be serialized to JSON and DER.
+type HashAlg crypto.Hash
 
-var hashAlgAvailable = (*hashAlg).Available
+var hashAlgAvailable = (*HashAlg).Available
 
-func (a hashAlg) Available() bool {
+func (a HashAlg) Available() bool {
 	return crypto.Hash(a).Available()
 }
 
-func (a hashAlg) New() hash.Hash {
+func (a HashAlg) New() hash.Hash {
 	return crypto.Hash(a).New()
 }
 
-func (a hashAlg) Size() int {
+func (a HashAlg) HashFunc() crypto.Hash {
+	return crypto.Hash(a)
+}
+
+func (a HashAlg) Size() int {
 	return crypto.Hash(a).Size()
 }
 
-func (a hashAlg) MarshalJSON() ([]byte, error) {
+func (a HashAlg) MarshalJSON() ([]byte, error) {
 	var s string
 
 	switch crypto.Hash(a) {
@@ -225,7 +228,7 @@ func (a hashAlg) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s)
 }
 
-func (a *hashAlg) UnmarshalJSON(b []byte) error {
+func (a *HashAlg) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
 		return err
@@ -233,15 +236,15 @@ func (a *hashAlg) UnmarshalJSON(b []byte) error {
 
 	switch s {
 	case "sha1":
-		*a = hashAlg(crypto.SHA1)
+		*a = HashAlg(crypto.SHA1)
 	case "sha224":
-		*a = hashAlg(crypto.SHA224)
+		*a = HashAlg(crypto.SHA224)
 	case "sha256":
-		*a = hashAlg(crypto.SHA256)
+		*a = HashAlg(crypto.SHA256)
 	case "sha384":
-		*a = hashAlg(crypto.SHA384)
+		*a = HashAlg(crypto.SHA384)
 	case "sha512":
-		*a = hashAlg(crypto.SHA512)
+		*a = HashAlg(crypto.SHA512)
 	default:
 		// be permissive here and allow everything to be
 		// unmarshalled.
@@ -251,7 +254,7 @@ func (a *hashAlg) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (a hashAlg) marshalASN1(b *cryptobyte.Builder) {
+func (a HashAlg) MarshalASN1(b *cryptobyte.Builder) {
 	b.AddASN1(cryptobyte_asn1.SEQUENCE, func(b *cryptobyte.Builder) { // AlgorithmIdentifier ::= SEQUENCE {
 		var oid asn1.ObjectIdentifier
 
@@ -325,7 +328,7 @@ type keyData struct {
 	// KDFAlg is the algorithm that is used to derive the unlock key from a primary key.
 	// It is also used to derive additional keys from the passphrase derived key in
 	// derivePassphraseKeys.
-	KDFAlg hashAlg `json:"kdf_alg,omitempty"`
+	KDFAlg HashAlg `json:"kdf_alg,omitempty"`
 
 	// EncryptedPayload is the platform protected key payload.
 	EncryptedPayload []byte `json:"encrypted_payload"`
@@ -341,7 +344,7 @@ type keyData struct {
 
 func processPlatformHandlerError(err error) error {
 	var pe *PlatformHandlerError
-	if xerrors.As(err, &pe) {
+	if errors.As(err, &pe) {
 		switch pe.Type {
 		case PlatformHandlerErrorInvalidData:
 			return &InvalidKeyDataError{pe.Err}
@@ -354,7 +357,7 @@ func processPlatformHandlerError(err error) error {
 		}
 	}
 
-	return xerrors.Errorf("cannot perform action because of an unexpected error: %w", err)
+	return fmt.Errorf("cannot perform action because of an unexpected error: %w", err)
 }
 
 // KeyData represents a disk unlock key and auxiliary key protected by a platform's
@@ -394,7 +397,7 @@ func (d *KeyData) derivePassphraseKeys(passphrase string, kdf KDF) (key, iv, aut
 	builder := cryptobyte.NewBuilder(nil)
 	builder.AddASN1(cryptobyte_asn1.SEQUENCE, func(b *cryptobyte.Builder) { // SEQUENCE {
 		b.AddASN1OctetString(params.KDF.Salt)                               // salt OCTET STRING
-		kdfAlg.marshalASN1(b)                                               // kdfAlgorithm AlgorithmIdentifier
+		kdfAlg.MarshalASN1(b)                                               // kdfAlgorithm AlgorithmIdentifier
 		b.AddASN1(cryptobyte_asn1.UTF8String, func(b *cryptobyte.Builder) { // encryption UTF8String
 			b.AddBytes([]byte(params.Encryption))
 		})
@@ -403,7 +406,7 @@ func (d *KeyData) derivePassphraseKeys(passphrase string, kdf KDF) (key, iv, aut
 	})
 	salt, err := builder.Bytes()
 	if err != nil {
-		return nil, nil, nil, xerrors.Errorf("cannot serialize salt: %w", err)
+		return nil, nil, nil, fmt.Errorf("cannot serialize salt: %w", err)
 	}
 
 	costParams := &KDFCostParams{
@@ -412,7 +415,7 @@ func (d *KeyData) derivePassphraseKeys(passphrase string, kdf KDF) (key, iv, aut
 		Threads:   uint8(params.KDF.CPUs)}
 	derived, err := kdf.Derive(passphrase, salt, costParams, uint32(params.DerivedKeySize))
 	if err != nil {
-		return nil, nil, nil, xerrors.Errorf("cannot derive key from passphrase: %w", err)
+		return nil, nil, nil, fmt.Errorf("cannot derive key from passphrase: %w", err)
 	}
 	if len(derived) != params.DerivedKeySize {
 		return nil, nil, nil, errors.New("KDF returned unexpected key length")
@@ -421,19 +424,19 @@ func (d *KeyData) derivePassphraseKeys(passphrase string, kdf KDF) (key, iv, aut
 	key = make([]byte, params.EncryptionKeySize)
 	r := hkdf.Expand(func() hash.Hash { return kdfAlg.New() }, derived, []byte("PASSPHRASE-ENC"))
 	if _, err := io.ReadFull(r, key); err != nil {
-		return nil, nil, nil, xerrors.Errorf("cannot derive encryption key: %w", err)
+		return nil, nil, nil, fmt.Errorf("cannot derive encryption key: %w", err)
 	}
 
 	iv = make([]byte, aes.BlockSize)
 	r = hkdf.Expand(func() hash.Hash { return kdfAlg.New() }, derived, []byte("PASSPHRASE-IV"))
 	if _, err := io.ReadFull(r, iv); err != nil {
-		return nil, nil, nil, xerrors.Errorf("cannot derive IV: %w", err)
+		return nil, nil, nil, fmt.Errorf("cannot derive IV: %w", err)
 	}
 
 	auth = make([]byte, params.AuthKeySize)
 	r = hkdf.Expand(func() hash.Hash { return kdfAlg.New() }, derived, []byte("PASSPHRASE-AUTH"))
 	if _, err := io.ReadFull(r, auth); err != nil {
-		return nil, nil, nil, xerrors.Errorf("cannot derive auth key: %w", err)
+		return nil, nil, nil, fmt.Errorf("cannot derive auth key: %w", err)
 	}
 
 	return key, iv, auth, nil
@@ -462,7 +465,7 @@ func (d *KeyData) updatePassphrase(payload, oldAuthKey []byte, passphrase string
 
 	c, err := aes.NewCipher(key)
 	if err != nil {
-		return xerrors.Errorf("cannot create cipher: %w", err)
+		return fmt.Errorf("cannot create cipher: %w", err)
 	}
 
 	d.data.PlatformHandle = handle
@@ -489,7 +492,7 @@ func (d *KeyData) openWithPassphrase(passphrase string, kdf KDF) (payload []byte
 
 	c, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, nil, xerrors.Errorf("cannot create cipher: %w", err)
+		return nil, nil, fmt.Errorf("cannot create cipher: %w", err)
 	}
 	stream := cipher.NewCFBDecrypter(c, iv)
 	stream.XORKeyStream(payload, d.data.EncryptedPayload)
@@ -511,7 +514,7 @@ func (d *KeyData) recoverKeysCommon(data []byte) (DiskUnlockKey, PrimaryKey, err
 	case 1:
 		unlockKey, primaryKey, err := unmarshalV1KeyPayload(data)
 		if err != nil {
-			return nil, nil, &InvalidKeyDataError{xerrors.Errorf("cannot unmarshal cleartext key payload: %w", err)}
+			return nil, nil, &InvalidKeyDataError{fmt.Errorf("cannot unmarshal cleartext key payload: %w", err)}
 		}
 		return unlockKey, primaryKey, nil
 	case 2:
@@ -520,7 +523,7 @@ func (d *KeyData) recoverKeysCommon(data []byte) (DiskUnlockKey, PrimaryKey, err
 		}
 		pk, err := unmarshalProtectedKeys(data)
 		if err != nil {
-			return nil, nil, &InvalidKeyDataError{xerrors.Errorf("cannot unmarshal cleartext key payload: %w", err)}
+			return nil, nil, &InvalidKeyDataError{fmt.Errorf("cannot unmarshal cleartext key payload: %w", err)}
 		}
 		return pk.unlockKey(crypto.Hash(d.data.KDFAlg)), pk.Primary, nil
 	default:
@@ -556,7 +559,7 @@ func (d *KeyData) UniqueID() (KeyID, error) {
 	h := crypto.SHA256.New()
 	enc := json.NewEncoder(h)
 	if err := enc.Encode(&d.data); err != nil {
-		return nil, xerrors.Errorf("cannot compute ID: %w", err)
+		return nil, fmt.Errorf("cannot compute ID: %w", err)
 	}
 	return KeyID(h.Sum(nil)), nil
 }
@@ -686,11 +689,11 @@ func (d *KeyData) ChangePassphrase(oldPassphrase, newPassphrase string, kdf KDF)
 func (d *KeyData) WriteAtomic(w KeyDataWriter) error {
 	enc := json.NewEncoder(w)
 	if err := enc.Encode(d.data); err != nil {
-		return xerrors.Errorf("cannot encode keydata: %w", err)
+		return fmt.Errorf("cannot encode keydata: %w", err)
 	}
 
 	if err := w.Commit(); err != nil {
-		return xerrors.Errorf("cannot commit keydata: %w", err)
+		return fmt.Errorf("cannot commit keydata: %w", err)
 	}
 
 	return nil
@@ -702,7 +705,7 @@ func ReadKeyData(r KeyDataReader) (*KeyData, error) {
 	d := &KeyData{readableName: r.ReadableName()}
 	dec := json.NewDecoder(r)
 	if err := dec.Decode(&d.data); err != nil {
-		return nil, xerrors.Errorf("cannot decode key data: %w", err)
+		return nil, fmt.Errorf("cannot decode key data: %w", err)
 	}
 
 	return d, nil
@@ -715,7 +718,7 @@ func ReadKeyData(r KeyDataReader) (*KeyData, error) {
 func NewKeyData(params *KeyParams) (*KeyData, error) {
 	encodedHandle, err := json.Marshal(params.Handle)
 	if err != nil {
-		return nil, xerrors.Errorf("cannot encode platform handle: %w", err)
+		return nil, fmt.Errorf("cannot encode platform handle: %w", err)
 	}
 
 	kd := &KeyData{
@@ -724,7 +727,7 @@ func NewKeyData(params *KeyParams) (*KeyData, error) {
 			PlatformName:     params.PlatformName,
 			Role:             params.Role,
 			PlatformHandle:   json.RawMessage(encodedHandle),
-			KDFAlg:           hashAlg(params.KDFAlg),
+			KDFAlg:           HashAlg(params.KDFAlg),
 			EncryptedPayload: params.EncryptedPayload,
 		},
 	}
@@ -750,12 +753,12 @@ func NewKeyDataWithPassphrase(params *KeyWithPassphraseParams, passphrase string
 
 	costParams, err := kdfOptions.deriveCostParams(passphraseEncryptionKeyLen+aes.BlockSize, kdf)
 	if err != nil {
-		return nil, xerrors.Errorf("cannot derive KDF cost parameters: %w", err)
+		return nil, fmt.Errorf("cannot derive KDF cost parameters: %w", err)
 	}
 
 	var salt [16]byte
 	if _, err := rand.Read(salt[:]); err != nil {
-		return nil, xerrors.Errorf("cannot read salt: %w", err)
+		return nil, fmt.Errorf("cannot read salt: %w", err)
 	}
 
 	kd.data.PassphraseParams = &passphraseParams{
@@ -773,7 +776,7 @@ func NewKeyDataWithPassphrase(params *KeyWithPassphraseParams, passphrase string
 	}
 
 	if err := kd.updatePassphrase(kd.data.EncryptedPayload, make([]byte, params.AuthKeySize), passphrase, kdf); err != nil {
-		return nil, xerrors.Errorf("cannot set passphrase: %w", err)
+		return nil, fmt.Errorf("cannot set passphrase: %w", err)
 	}
 
 	return kd, nil
@@ -832,7 +835,7 @@ func (k *protectedKeys) marshalASN1(builder *cryptobyte.Builder) {
 func MakeDiskUnlockKey(rand io.Reader, alg crypto.Hash, primaryKey PrimaryKey) (unlockKey DiskUnlockKey, cleartextPayload []byte, err error) {
 	unique := make([]byte, len(primaryKey))
 	if _, err := io.ReadFull(rand, unique); err != nil {
-		return nil, nil, xerrors.Errorf("cannot make unique ID: %w", err)
+		return nil, nil, fmt.Errorf("cannot make unique ID: %w", err)
 	}
 
 	pk := &protectedKeys{
@@ -844,7 +847,7 @@ func MakeDiskUnlockKey(rand io.Reader, alg crypto.Hash, primaryKey PrimaryKey) (
 	pk.marshalASN1(builder)
 	cleartextPayload, err = builder.Bytes()
 	if err != nil {
-		return nil, nil, xerrors.Errorf("cannot marshal cleartext payload: %w", err)
+		return nil, nil, fmt.Errorf("cannot marshal cleartext payload: %w", err)
 	}
 
 	return pk.unlockKey(alg), cleartextPayload, nil
