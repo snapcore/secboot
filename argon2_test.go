@@ -244,39 +244,9 @@ func (s *argon2Suite) TestInProcessKDFDeriveInvalidMode(c *C) {
 	c.Check(err, ErrorMatches, `invalid mode`)
 }
 
-func (s *argon2Suite) TestInProcessKDFDeriveInvalidParams(c *C) {
-	_, err := InProcessArgon2KDF.Derive("foo", nil, Argon2id, nil, 32)
-	c.Check(err, ErrorMatches, `nil params`)
-}
-
-func (s *argon2Suite) TestInProcessKDFDeriveInvalidTime(c *C) {
-	_, err := InProcessArgon2KDF.Derive("foo", nil, Argon2id, &Argon2CostParams{Time: 0, MemoryKiB: 32, Threads: 1}, 32)
-	c.Check(err, ErrorMatches, `invalid time cost`)
-}
-
-func (s *argon2Suite) TestInProcessKDFDeriveInvalidThreads(c *C) {
-	_, err := InProcessArgon2KDF.Derive("foo", nil, Argon2id, &Argon2CostParams{Time: 4, MemoryKiB: 32, Threads: 0}, 32)
-	c.Check(err, ErrorMatches, `invalid number of threads`)
-}
-
 func (s *argon2Suite) TestInProcessKDFTimeInvalidMode(c *C) {
 	_, err := InProcessArgon2KDF.Time(Argon2Default, &Argon2CostParams{Time: 4, MemoryKiB: 32, Threads: 1})
 	c.Check(err, ErrorMatches, `invalid mode`)
-}
-
-func (s *argon2Suite) TestInProcessKDFTimeInvalidParams(c *C) {
-	_, err := InProcessArgon2KDF.Time(Argon2id, nil)
-	c.Check(err, ErrorMatches, `nil params`)
-}
-
-func (s *argon2Suite) TestInProcessKDFTimeInvalidTime(c *C) {
-	_, err := InProcessArgon2KDF.Time(Argon2id, &Argon2CostParams{Time: 0, MemoryKiB: 32, Threads: 1})
-	c.Check(err, ErrorMatches, `invalid time cost`)
-}
-
-func (s *argon2Suite) TestInProcessKDFTimeInvalidThreads(c *C) {
-	_, err := InProcessArgon2KDF.Time(Argon2id, &Argon2CostParams{Time: 4, MemoryKiB: 32, Threads: 0})
-	c.Check(err, ErrorMatches, `invalid number of threads`)
 }
 
 func (s *argon2Suite) TestModeConstants(c *C) {
@@ -307,10 +277,11 @@ func (s *argon2SuiteExpensive) testInProcessKDFDerive(c *C, data *testInProcessA
 	c.Check(err, IsNil)
 	runtime.GC()
 
-	expected := argon2.Key(data.passphrase, data.salt, argon2.Mode(data.mode), &argon2.CostParams{
+	expected, err := argon2.Key(data.passphrase, data.salt, argon2.Mode(data.mode), &argon2.CostParams{
 		Time:      data.params.Time,
 		MemoryKiB: data.params.MemoryKiB,
 		Threads:   data.params.Threads}, data.keyLen)
+	c.Check(err, IsNil)
 	runtime.GC()
 
 	c.Check(key, DeepEquals, expected)
