@@ -30,7 +30,9 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"time"
 
+	"github.com/snapcore/secboot/internal/pbkdf2"
 	"golang.org/x/crypto/cryptobyte"
 	cryptobyte_asn1 "golang.org/x/crypto/cryptobyte/asn1"
 	"golang.org/x/crypto/hkdf"
@@ -38,7 +40,6 @@ import (
 )
 
 const (
-	kdfType                            = "argon2i"
 	nilHash                    hashAlg = 0
 	passphraseKeyLen                   = 32
 	passphraseEncryptionKeyLen         = 32
@@ -125,6 +126,7 @@ type AuthMode uint8
 const (
 	AuthModeNone AuthMode = iota
 	AuthModePassphrase
+	AuthModePIN
 )
 
 // KeyParams provides parameters required to create a new KeyData object.
@@ -160,9 +162,18 @@ type KeyParams struct {
 // implementation.
 type KeyWithPassphraseParams struct {
 	KeyParams
-	KDFOptions *Argon2Options // The passphrase KDF options
+	KDFOptions KDFOptions // The passphrase KDF options
 
 	// AuthKeySize is the size of key to derive from the passphrase for
+	// use by the platform implementation.
+	AuthKeySize int
+}
+
+type KeyWithPINParams struct {
+	KeyParams
+	KDFOptions *PBKDF2Options // The PIN KDF options
+
+	// AuthKeySize is the size of key to derive from the PIN for
 	// use by the platform implementation.
 	AuthKeySize int
 }
@@ -275,14 +286,19 @@ func (a hashAlg) marshalASN1(b *cryptobyte.Builder) {
 	})
 }
 
+type kdfParams struct {
+	Type   string  `json:"type"`
+	Time   int     `json:"time"`
+	Memory int     `json:"memory"`
+	CPUs   int     `json:"cpus"`
+	Hash   hashAlg `json:"hash"`
+}
+
 // kdfData corresponds to the arguments to a KDF and matches the
 // corresponding object in the LUKS2 specification.
 type kdfData struct {
-	Type   string `json:"type"`
-	Salt   []byte `json:"salt"`
-	Time   int    `json:"time"`
-	Memory int    `json:"memory"`
-	CPUs   int    `json:"cpus"`
+	Salt []byte `json:"salt"`
+	kdfParams
 }
 
 // passphraseParams contains parameters for passphrase authentication.
@@ -295,6 +311,11 @@ type passphraseParams struct {
 	DerivedKeySize    int    `json:"derived_key_size"`    // Size of key to derive from passphrase using the parameters of the KDF field.
 	EncryptionKeySize int    `json:"encryption_key_size"` // Size of encryption key to derive from passphrase derived key
 	AuthKeySize       int    `json:"auth_key_size"`       // Size of auth key to derive from passphrase derived key
+}
+
+type pinParams struct {
+	KDF         kdfData `json:"kdf"`
+	AuthKeySize int     `json:"auth_key_size"`
 }
 
 type keyData struct {
@@ -331,6 +352,7 @@ type keyData struct {
 	EncryptedPayload []byte `json:"encrypted_payload"`
 
 	PassphraseParams *passphraseParams `json:"passphrase_params,omitempty"`
+	PINParams        *pinParams        `json:"pin_params,omitempty"`
 
 	// AuthorizedSnapModels contains information about the Snap models
 	// that have been authorized to access the data protected by this key.
@@ -370,10 +392,6 @@ func (d *KeyData) derivePassphraseKeys(passphrase string) (key, iv, auth []byte,
 	}
 
 	params := d.data.PassphraseParams
-	if params.KDF.Type != kdfType {
-		// Only Argon2i is supported
-		return nil, nil, nil, fmt.Errorf("unexpected intermediate KDF type \"%s\"", params.KDF.Type)
-	}
 	if params.DerivedKeySize < 0 {
 		return nil, nil, nil, fmt.Errorf("invalid derived key size (%d bytes)", params.DerivedKeySize)
 	}
@@ -384,13 +402,18 @@ func (d *KeyData) derivePassphraseKeys(passphrase string) (key, iv, auth []byte,
 	if params.AuthKeySize < 0 {
 		return nil, nil, nil, fmt.Errorf("invalid auth key size (%d bytes)", params.AuthKeySize)
 	}
+	if params.KDF.Time < 0 {
+		return nil, nil, nil, fmt.Errorf("invalid KDF time (%d)", params.KDF.Time)
+	}
 
 	kdfAlg := d.data.KDFAlg
 	if !hashAlgAvailable(&kdfAlg) {
 		return nil, nil, nil, fmt.Errorf("unavailable leaf KDF digest algorithm %v", kdfAlg)
 	}
 
-	// Include derivation parameters in the Argon2 salt in order to protect them
+	// Include derivation parameters in the KDF salt in order to protect them.
+	// Ideally the extra parameters would be part of Argon2's additional data, but
+	// the go package doesn't expose this.
 	builder := cryptobyte.NewBuilder(nil)
 	builder.AddASN1(cryptobyte_asn1.SEQUENCE, func(b *cryptobyte.Builder) { // SEQUENCE {
 		b.AddASN1OctetString(params.KDF.Salt)                               // salt OCTET STRING
@@ -406,16 +429,40 @@ func (d *KeyData) derivePassphraseKeys(passphrase string) (key, iv, auth []byte,
 		return nil, nil, nil, xerrors.Errorf("cannot serialize salt: %w", err)
 	}
 
-	costParams := &Argon2CostParams{
-		Time:      uint32(params.KDF.Time),
-		MemoryKiB: uint32(params.KDF.Memory),
-		Threads:   uint8(params.KDF.CPUs)}
-	derived, err := argon2KDF().Derive(passphrase, salt, costParams, uint32(params.DerivedKeySize))
-	if err != nil {
-		return nil, nil, nil, xerrors.Errorf("cannot derive key from passphrase: %w", err)
-	}
-	if len(derived) != params.DerivedKeySize {
-		return nil, nil, nil, errors.New("KDF returned unexpected key length")
+	var derived []byte
+
+	switch params.KDF.Type {
+	case string(Argon2i), string(Argon2id):
+		if params.KDF.Memory < 0 {
+			return nil, nil, nil, fmt.Errorf("invalid argon2 memory (%d)", params.KDF.Memory)
+		}
+		if params.KDF.CPUs < 0 {
+			return nil, nil, nil, fmt.Errorf("invalid argon2 threads (%d)", params.KDF.CPUs)
+		}
+
+		mode := Argon2Mode(params.KDF.Type)
+		costParams := &Argon2CostParams{
+			Time:      uint32(params.KDF.Time),
+			MemoryKiB: uint32(params.KDF.Memory),
+			Threads:   uint8(params.KDF.CPUs)}
+		derived, err = argon2KDF().Derive(passphrase, salt, mode, costParams, uint32(params.DerivedKeySize))
+		if err != nil {
+			return nil, nil, nil, xerrors.Errorf("cannot derive key from passphrase: %w", err)
+		}
+		if len(derived) != params.DerivedKeySize {
+			return nil, nil, nil, errors.New("KDF returned unexpected key length")
+		}
+	case pbkdf2Type:
+		pbkdfParams := &pbkdf2.Params{
+			Iterations: uint(params.KDF.Time),
+			HashAlg:    crypto.Hash(params.KDF.Hash),
+		}
+		derived, err = pbkdf2.Key(passphrase, salt, pbkdfParams, uint(params.DerivedKeySize))
+		if err != nil {
+			return nil, nil, nil, xerrors.Errorf("cannot derive key from passphrase: %w", err)
+		}
+	default:
+		return nil, nil, nil, fmt.Errorf("unexpected intermediate KDF type \"%s\"", params.KDF.Type)
 	}
 
 	key = make([]byte, params.EncryptionKeySize)
@@ -437,6 +484,36 @@ func (d *KeyData) derivePassphraseKeys(passphrase string) (key, iv, auth []byte,
 	}
 
 	return key, iv, auth, nil
+}
+
+func (d *KeyData) derivePINAuthKey(pin PIN) ([]byte, error) {
+	if d.data.PINParams == nil {
+		return nil, errors.New("no PIN params")
+	}
+
+	params := d.data.PINParams
+	if params.AuthKeySize < 0 {
+		return nil, fmt.Errorf("invalid auth key size (%d bytes)", params.AuthKeySize)
+	}
+	if params.KDF.Time < 0 {
+		return nil, fmt.Errorf("invalid KDF time (%d)", params.KDF.Time)
+	}
+	if params.KDF.Type != pbkdf2Type {
+		return nil, fmt.Errorf("unexpected KDF type \"%s\"", params.KDF.Type)
+	}
+
+	pbkdfParams := &pbkdf2.Params{
+		Iterations: uint(params.KDF.Time),
+		HashAlg:    crypto.Hash(params.KDF.Hash),
+	}
+	if !pbkdfParams.HashAlg.Available() {
+		return nil, fmt.Errorf("unavailable pbkdf2 digest algorithm %v", pbkdfParams.HashAlg)
+	}
+	key, err := pbkdf2.Key(string(pin.Bytes()), params.KDF.Salt, pbkdfParams, uint(params.AuthKeySize))
+	if err != nil {
+		return nil, xerrors.Errorf("cannot derive auth key from PIN: %w", err)
+	}
+	return key, nil
 }
 
 func (d *KeyData) updatePassphrase(payload, oldAuthKey []byte, passphrase string) error {
@@ -471,6 +548,26 @@ func (d *KeyData) updatePassphrase(payload, oldAuthKey []byte, passphrase string
 	stream := cipher.NewCFBEncrypter(c, iv)
 	stream.XORKeyStream(d.data.EncryptedPayload, payload)
 
+	return nil
+}
+
+func (d *KeyData) updatePIN(oldAuthKey []byte, pin PIN) error {
+	handler := handlers[d.data.PlatformName]
+	if handler == nil {
+		return ErrNoPlatformHandlerRegistered
+	}
+
+	authKey, err := d.derivePINAuthKey(pin)
+	if err != nil {
+		return err
+	}
+
+	handle, err := handler.ChangeAuthKey(d.platformKeyData(), oldAuthKey, authKey)
+	if err != nil {
+		return err
+	}
+
+	d.data.PlatformHandle = handle
 	return nil
 }
 
@@ -566,6 +663,8 @@ func (d *KeyData) AuthMode() (out AuthMode) {
 	switch {
 	case d.data.PassphraseParams != nil:
 		return AuthModePassphrase
+	case d.data.PINParams != nil:
+		return AuthModePIN
 	default:
 		return AuthModeNone
 	}
@@ -655,6 +754,29 @@ func (d *KeyData) RecoverKeysWithPassphrase(passphrase string) (DiskUnlockKey, P
 	return d.recoverKeysCommon(c)
 }
 
+func (d *KeyData) RecoverKeysWithPIN(pin PIN) (DiskUnlockKey, PrimaryKey, error) {
+	if d.AuthMode() != AuthModePIN {
+		return nil, nil, errors.New("cannot recover key with PIN")
+	}
+
+	handler := handlers[d.data.PlatformName]
+	if handler == nil {
+		return nil, nil, ErrNoPlatformHandlerRegistered
+	}
+
+	key, err := d.derivePINAuthKey(pin)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	c, err := handler.RecoverKeysWithAuthKey(d.platformKeyData(), d.data.EncryptedPayload, key)
+	if err != nil {
+		return nil, nil, processPlatformHandlerError(err)
+	}
+
+	return d.recoverKeysCommon(c)
+}
+
 // ChangePassphrase updates the passphrase used to recover the keys from this key data
 // via the KeyData.RecoverKeysWithPassphrase API. This can only be called if a passhphrase
 // has been set previously (KeyData.AuthMode returns AuthModePassphrase).
@@ -671,6 +793,23 @@ func (d *KeyData) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 	}
 
 	if err := d.updatePassphrase(payload, oldKey, newPassphrase); err != nil {
+		return processPlatformHandlerError(err)
+	}
+
+	return nil
+}
+
+func (d *KeyData) ChangePIN(oldPIN, newPIN PIN) error {
+	if d.AuthMode()&AuthModePIN == 0 {
+		return errors.New("cannot change PIN without setting an initial PIN")
+	}
+
+	oldKey, err := d.derivePINAuthKey(oldPIN)
+	if err != nil {
+		return err
+	}
+
+	if err := d.updatePIN(oldKey, newPIN); err != nil {
 		return processPlatformHandlerError(err)
 	}
 
@@ -743,7 +882,7 @@ func NewKeyDataWithPassphrase(params *KeyWithPassphraseParams, passphrase string
 		kdfOptions = &defaultOptions
 	}
 
-	costParams, err := kdfOptions.deriveCostParams(passphraseEncryptionKeyLen + aes.BlockSize)
+	kdfParams, err := kdfOptions.kdfParams(2*time.Second, passphraseKeyLen)
 	if err != nil {
 		return nil, xerrors.Errorf("cannot derive KDF cost parameters: %w", err)
 	}
@@ -755,11 +894,8 @@ func NewKeyDataWithPassphrase(params *KeyWithPassphraseParams, passphrase string
 
 	kd.data.PassphraseParams = &passphraseParams{
 		KDF: kdfData{
-			Type:   kdfType,
-			Salt:   salt[:],
-			Time:   int(costParams.Time),
-			Memory: int(costParams.MemoryKiB),
-			CPUs:   int(costParams.Threads),
+			Salt:      salt[:],
+			kdfParams: *kdfParams,
 		},
 		Encryption:        passphraseEncryption,
 		DerivedKeySize:    passphraseKeyLen,
@@ -769,6 +905,47 @@ func NewKeyDataWithPassphrase(params *KeyWithPassphraseParams, passphrase string
 
 	if err := kd.updatePassphrase(kd.data.EncryptedPayload, make([]byte, params.AuthKeySize), passphrase); err != nil {
 		return nil, xerrors.Errorf("cannot set passphrase: %w", err)
+	}
+
+	return kd, nil
+}
+
+func NewKeyDataWithPIN(params *KeyWithPINParams, pin PIN) (*KeyData, error) {
+	kd, err := NewKeyData(&params.KeyParams)
+	if err != nil {
+		return nil, err
+	}
+
+	kdfOptions := params.KDFOptions
+	if kdfOptions == nil {
+		var defaultOptions PBKDF2Options
+		kdfOptions = &defaultOptions
+	}
+
+	if params.AuthKeySize < 0 {
+		return nil, errors.New("invalid auth key size")
+	}
+
+	kdfParams, err := kdfOptions.kdfParams(200*time.Millisecond, uint32(params.AuthKeySize))
+	if err != nil {
+		return nil, xerrors.Errorf("cannot derive KDF cost parameters: %w", err)
+	}
+
+	var salt [16]byte
+	if _, err := rand.Read(salt[:]); err != nil {
+		return nil, xerrors.Errorf("cannot read salt: %w", err)
+	}
+
+	kd.data.PINParams = &pinParams{
+		KDF: kdfData{
+			Salt:      salt[:],
+			kdfParams: *kdfParams,
+		},
+		AuthKeySize: params.AuthKeySize,
+	}
+
+	if err := kd.updatePIN(make([]byte, params.AuthKeySize), pin); err != nil {
+		return nil, xerrors.Errorf("cannot set PIN: %w", err)
 	}
 
 	return kd, nil

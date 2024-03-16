@@ -20,10 +20,16 @@
 package secboot
 
 import (
+	"crypto"
 	"io"
+	"time"
 
 	"github.com/snapcore/secboot/internal/luks2"
 	"github.com/snapcore/secboot/internal/luksview"
+)
+
+const (
+	NilHash = nilHash
 )
 
 var (
@@ -31,10 +37,18 @@ var (
 	UnmarshalProtectedKeys = unmarshalProtectedKeys
 )
 
-type ProtectedKeys = protectedKeys
+type (
+	HashAlg       = hashAlg
+	KdfParams     = kdfParams
+	ProtectedKeys = protectedKeys
+)
 
-func (o *Argon2Options) DeriveCostParams(keyLen int) (*Argon2CostParams, error) {
-	return o.deriveCostParams(keyLen)
+func (o *Argon2Options) KdfParams(defaultTargetDuration time.Duration, keyLen uint32) (*KdfParams, error) {
+	return o.kdfParams(defaultTargetDuration, keyLen)
+}
+
+func (o *PBKDF2Options) KdfParams(defaultTargetDuration time.Duration, keyLen uint32) (*KdfParams, error) {
+	return o.kdfParams(defaultTargetDuration, keyLen)
 }
 
 func MockLUKS2Activate(fn func(string, string, []byte, int) error) (restore func()) {
@@ -106,6 +120,14 @@ func MockNewLUKSView(fn func(string, luks2.LockMode) (*luksview.View, error)) (r
 	newLUKSView = fn
 	return func() {
 		newLUKSView = origNewLUKSView
+	}
+}
+
+func MockPBKDF2Benchmark(fn func(time.Duration, crypto.Hash) (uint, error)) (restore func()) {
+	orig := pbkdf2Benchmark
+	pbkdf2Benchmark = fn
+	return func() {
+		pbkdf2Benchmark = orig
 	}
 }
 
