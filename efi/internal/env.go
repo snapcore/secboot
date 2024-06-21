@@ -1,7 +1,7 @@
 // -*- Mode: Go; indent-tabs-mode: t -*-
 
 /*
- * Copyright (C) 2021 Canonical Ltd
+ * Copyright (C) 2024 Canonical Ltd
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 3 as
@@ -17,34 +17,23 @@
  *
  */
 
-package efi
+package internal
 
 import (
-	"os"
+	"context"
 
-	efi "github.com/canonical/go-efilib"
 	"github.com/canonical/tcglog-parser"
 )
 
-var (
-	eventLogPath = "/sys/kernel/security/tpm0/binary_bios_measurements" // Path of the TCG event log for the default TPM, in binary form
-	readVar      = efi.ReadVariable
-)
+// HostEnvironment is an interface that abstracts out an EFI environment, so that
+// consumers of the API can provide a custom mechanism to read EFI variables or parse
+// the TCG event log. This needs to be kept in sync with [efi.HostEnvironment].
+type HostEnvironment interface {
+	// VarContext returns a context containing a VarsBackend, keyed by efi.VarsBackendKey,
+	// for interacting with EFI variables via go-efilib. This context can be passed to any
+	// go-efilib function that interacts with EFI variables.
+	VarContext() context.Context
 
-type defaultEnvImpl struct{}
-
-func (e defaultEnvImpl) ReadVar(name string, guid efi.GUID) ([]byte, efi.VariableAttributes, error) {
-	return readVar(name, guid)
+	// ReadEventLog reads the TCG event log
+	ReadEventLog() (*tcglog.Log, error)
 }
-
-func (e defaultEnvImpl) ReadEventLog() (*tcglog.Log, error) {
-	f, err := os.Open(eventLogPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	return tcglog.ReadLog(f, &tcglog.LogOptions{})
-}
-
-var defaultEnv = defaultEnvImpl{}

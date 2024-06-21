@@ -17,9 +17,10 @@
  *
  */
 
-package efi_test
+package internal_test
 
 import (
+	_ "embed"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,7 +28,7 @@ import (
 	efi "github.com/canonical/go-efilib"
 	"github.com/canonical/go-tpm2"
 	"github.com/canonical/tcglog-parser"
-	. "github.com/snapcore/secboot/efi"
+	. "github.com/snapcore/secboot/efi/internal"
 	"github.com/snapcore/secboot/internal/efitest"
 
 	. "gopkg.in/check.v1"
@@ -37,56 +38,8 @@ type defaultEnvSuite struct{}
 
 var _ = Suite(&defaultEnvSuite{})
 
-type testReadVarData struct {
-	name string
-	guid efi.GUID
-}
-
-func (s *defaultEnvSuite) testReadVar(c *C, data *testReadVarData) {
-	vars := makeMockVars(c, withMsSecureBootConfig())
-	restore := MockReadVar(func(name string, guid efi.GUID) ([]byte, efi.VariableAttributes, error) {
-		entry, exists := vars[efi.VariableDescriptor{Name: name, GUID: guid}]
-		if !exists {
-			return nil, 0, efi.ErrVarNotExist
-		}
-		return entry.Payload, entry.Attrs, nil
-	})
-	defer restore()
-
-	payload, attrs, err := DefaultEnv.ReadVar(data.name, data.guid)
-
-	entry, exists := vars[efi.VariableDescriptor{Name: data.name, GUID: data.guid}]
-	if !exists {
-		c.Check(err, Equals, efi.ErrVarNotExist)
-	} else {
-		c.Check(err, IsNil)
-		c.Check(attrs, Equals, entry.Attrs)
-		c.Check(payload, DeepEquals, entry.Payload)
-	}
-}
-
-func (s *defaultEnvSuite) TestReadVar1(c *C) {
-	s.testReadVar(c, &testReadVarData{
-		name: "SecureBoot",
-		guid: efi.GlobalVariable})
-}
-
-func (s *defaultEnvSuite) TestReadVar2(c *C) {
-	s.testReadVar(c, &testReadVarData{
-		name: "PK",
-		guid: efi.GlobalVariable})
-}
-
-func (s *defaultEnvSuite) TestReadVar3(c *C) {
-	s.testReadVar(c, &testReadVarData{
-		name: "dbx",
-		guid: efi.ImageSecurityDatabaseGuid})
-}
-
-func (s *defaultEnvSuite) TestReadVarNotExist(c *C) {
-	s.testReadVar(c, &testReadVarData{
-		name: "SecureBoot",
-		guid: efi.ImageSecurityDatabaseGuid})
+func (s *defaultEnvSuite) TestVarContext(c *C) {
+	c.Check(DefaultEnv.VarContext(), Equals, efi.DefaultVarContext)
 }
 
 func (s *defaultEnvSuite) testReadEventLog(c *C, opts *efitest.LogOptions) {
