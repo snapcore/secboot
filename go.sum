@@ -7,11 +7,11 @@ github.com/canonical/go-sp800.108-kdf v0.0.0-20210315104021-ead800bbf9a0/go.mod 
 github.com/canonical/go-sp800.90a-drbg v0.0.0-20210314144037-6eeb1040d6c3 h1:oe6fCvaEpkhyW3qAicT0TnGtyht/UrgvOwMcEgLb7Aw=
 github.com/canonical/go-sp800.90a-drbg v0.0.0-20210314144037-6eeb1040d6c3/go.mod h1:qdP0gaj0QtgX2RUZhnlVrceJ+Qln8aSlDyJwelLLFeM=
 github.com/canonical/go-tpm2 v0.0.0-20210827151749-f80ff5afff61/go.mod h1:vG41hdbBjV4+/fkubTT1ENBBqSkLwLr7mCeW9Y6kpZY=
-github.com/canonical/go-tpm2 v1.7.3 h1:4B88K59G6j4gVY+amW0JhFngtyIMmiZr6slj6cZyv4U=
-github.com/canonical/go-tpm2 v1.7.3/go.mod h1:Dz0PQRmoYrmk/4BLILjRA+SFzuqEo1etAvYeAJiMhYU=
+github.com/canonical/go-tpm2 v1.7.6 h1:9k9OAEEp9xKp4h2WJwfTUNivblJi4L5Wjx7Q/LkSTSQ=
+github.com/canonical/go-tpm2 v1.7.6/go.mod h1:Dz0PQRmoYrmk/4BLILjRA+SFzuqEo1etAvYeAJiMhYU=
 github.com/canonical/tcglog-parser v0.0.0-20210824131805-69fa1e9f0ad2/go.mod h1:QoW2apR2tBl6T/4czdND/EHjL1Ia9cCmQnIj9Xe0Kt8=
-github.com/canonical/tcglog-parser v0.0.0-20240726104243-6363e875afc6 h1:WcR9HTKI1uiKZXpfbQ33Qjr5uGfBontkpX3aQJauF/E=
-github.com/canonical/tcglog-parser v0.0.0-20240726104243-6363e875afc6/go.mod h1:eDAzszT5fmIHIjTMTsT0nTtZ+GnZb14tvi1h45Njk3g=
+github.com/canonical/tcglog-parser v0.0.0-20240804202244-4cddc40d276e h1:PgcaSpbdhqP11lHZe4x/kpEyRAUsNyUxdWkfd/dhd8g=
+github.com/canonical/tcglog-parser v0.0.0-20240804202244-4cddc40d276e/go.mod h1:ywdPBqUGkuuiitPpVWCfilf2/gq+frhq4CNiNs9KyHU=
 github.com/coreos/go-systemd v0.0.0-20180511133405-39ca1b05acc7/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/frankban/quicktest v1.2.2/go.mod h1:Qh/WofXFeiAFII1aEBu529AtJo6Zg2VHscnEsbBnJ20=
 github.com/godbus/dbus v0.0.0-20190726142602-4481cbc300e2 h1:ZpnhV/YsD2/4cESfV5+Hoeu/iUR3ruzNvZ+yQfO03a0=
