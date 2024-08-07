@@ -23,6 +23,7 @@ type (
 	CheckTPM2DeviceFlags                   = checkTPM2DeviceFlags
 	CpuVendor                              = cpuVendor
 	DetectVirtResult                       = detectVirtResult
+	DriversAndAppsResultFlags              = driversAndAppsResultFlags
 	MeVersion                              = meVersion
 	PlatformFirmwareProtectionsResultFlags = platformFirmwareProtectionsResultFlags
 )
@@ -34,6 +35,7 @@ const (
 	CpuVendorAMD                                       = cpuVendorAMD
 	DetectVirtNone                                     = detectVirtNone
 	DetectVirtVM                                       = detectVirtVM
+	DriversAndAppsDriversPresent                       = driversAndAppsDriversPresent
 	MeFamilyUnknown                                    = meFamilyUnknown
 	MeFamilySps                                        = meFamilySps
 	MeFamilyTxe                                        = meFamilyTxe
@@ -45,8 +47,10 @@ const (
 var (
 	CalculateIntelMEFamily                              = calculateIntelMEFamily
 	CheckCPUDebuggingLockedMSR                          = checkCPUDebuggingLockedMSR
+	CheckDriversAndAppsMeasurements                     = checkDriversAndAppsMeasurements
 	CheckFirmwareLogAndChoosePCRBank                    = checkFirmwareLogAndChoosePCRBank
 	CheckForKernelIOMMU                                 = checkForKernelIOMMU
+	CheckPlatformFirmwareMeasurements                   = checkPlatformFirmwareMeasurements
 	CheckPlatformFirmwareProtections                    = checkPlatformFirmwareProtections
 	CheckPlatformFirmwareProtectionsIntelMEI            = checkPlatformFirmwareProtectionsIntelMEI
 	CheckSecureBootPolicyPCRForDegradedFirmwareSettings = checkSecureBootPolicyPCRForDegradedFirmwareSettings

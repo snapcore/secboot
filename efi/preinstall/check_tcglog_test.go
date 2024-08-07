@@ -278,7 +278,7 @@ func (s *tcglogSuite) TestCheckFirmwareLogAndChoosePCRBankUnexpectedStartupLocal
 	c.Check(err, ErrorMatches, `no suitable PCR algorithm available:
 - TPM_ALG_SHA512: digest algorithm not present in log.
 - TPM_ALG_SHA384: digest algorithm not present in log.
-- TPM_ALG_SHA256\(PCR0\): PCR value mismatch \(actual from TPM 0x25a58800ba22dff433a8bb1b5084a53ddf02dc71f204053b38036fe1c0f146e2, reconstructed from log 0x3d2b11b4c5cb623acbde6d14205217e47ebd368eab861e4fed782bb99be4598a\).
+- TPM_ALG_SHA256\(PCR0\): PCR value mismatch \(actual from TPM 0xd41580fada9d73a2b118afbe38b4e47e4f6917c954e7266c20f324296f48729d, reconstructed from log 0x89f30470312a025085f66bc4a2c70288d753ed56496d7808926a36a7af57f8b1\).
 - TPM_ALG_SHA256\(PCR1\): unexpected StartupLocality event \(should be in PCR0\).
 `)
 	var e *NoSuitablePCRAlgorithmError
@@ -289,7 +289,7 @@ func (s *tcglogSuite) TestCheckFirmwareLogAndChoosePCRBankUnexpectedStartupLocal
 	c.Check(e.UnwrapBankError(tpm2.HashAlgorithmSHA384), ErrorMatches, `digest algorithm not present in log`)
 	c.Check(e.UnwrapPCRError(tpm2.HashAlgorithmSHA384, internal_efi.PlatformFirmwarePCR), IsNil)
 	c.Check(e.UnwrapBankError(tpm2.HashAlgorithmSHA256), IsNil)
-	c.Check(e.UnwrapPCRError(tpm2.HashAlgorithmSHA256, internal_efi.PlatformFirmwarePCR), ErrorMatches, `PCR value mismatch \(actual from TPM 0x25a58800ba22dff433a8bb1b5084a53ddf02dc71f204053b38036fe1c0f146e2, reconstructed from log 0x3d2b11b4c5cb623acbde6d14205217e47ebd368eab861e4fed782bb99be4598a\)`)
+	c.Check(e.UnwrapPCRError(tpm2.HashAlgorithmSHA256, internal_efi.PlatformFirmwarePCR), ErrorMatches, `- TPM_ALG_SHA256(PCR0): PCR value mismatch (actual from TPM 0xd41580fada9d73a2b118afbe38b4e47e4f6917c954e7266c20f324296f48729d, reconstructed from log 0x89f30470312a025085f66bc4a2c70288d753ed56496d7808926a36a7af57f8b1).`)
 	c.Check(e.UnwrapPCRError(tpm2.HashAlgorithmSHA256, internal_efi.PlatformFirmwareConfigPCR), ErrorMatches, `unexpected StartupLocality event \(should be in PCR0\)`)
 	c.Check(e.UnwrapPCRError(tpm2.HashAlgorithmSHA256, internal_efi.DriversAndAppsPCR), IsNil)
 }
@@ -420,7 +420,7 @@ func (s *tcglogSuite) TestCheckFirmwareLogAndChoosePCRBankPCRMismatchMandatory(c
 	c.Check(err, ErrorMatches, `no suitable PCR algorithm available:
 - TPM_ALG_SHA512: digest algorithm not present in log.
 - TPM_ALG_SHA384: digest algorithm not present in log.
-- TPM_ALG_SHA256\(PCR0\): PCR value mismatch \(actual from TPM 0x25a58800ba22dff433a8bb1b5084a53ddf02dc71f204053b38036fe1c0f146e2, reconstructed from log 0x3d2b11b4c5cb623acbde6d14205217e47ebd368eab861e4fed782bb99be4598a\).
+- TPM_ALG_SHA256\(PCR0\): PCR value mismatch \(actual from TPM 0xd41580fada9d73a2b118afbe38b4e47e4f6917c954e7266c20f324296f48729d, reconstructed from log 0x89f30470312a025085f66bc4a2c70288d753ed56496d7808926a36a7af57f8b1\).
 `)
 	var e *NoSuitablePCRAlgorithmError
 	c.Check(errors.As(err, &e), testutil.IsTrue)

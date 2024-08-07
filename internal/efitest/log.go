@@ -154,7 +154,7 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 
 	// Mock S-CRTM measurements
 	{
-		data := tcglog.StringEventData("1.0")
+		data := tcglog.GUIDEventData(efi.MakeGUID(0x8beb77ea, 0x5c75, 0x4d08, 0x8e2b, [...]byte{0x96, 0x34, 0x86, 0xda, 0xe7, 0xf7}))
 		builder.hashLogExtendEvent(c, data, &logEvent{
 			pcrIndex:  0,
 			eventType: tcglog.EventTypeSCRTMVersion,
@@ -162,23 +162,25 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 	}
 	{
 		blob := bytesHashData("mock platform firmware blob 1")
-		var data [16]byte
-		binary.LittleEndian.PutUint64(data[0:], 0x820000)
-		binary.LittleEndian.PutUint64(data[8:], 0xe0000)
+		data := &tcglog.EFIPlatformFirmwareBlob{
+			BlobBase:   0x820000,
+			BlobLength: 0xe0000,
+		}
 		builder.hashLogExtendEvent(c, blob, &logEvent{
 			pcrIndex:  0,
 			eventType: tcglog.EventTypeEFIPlatformFirmwareBlob,
-			data:      tcglog.OpaqueEventData(data[:])})
+			data:      data})
 	}
 	{
 		blob := bytesHashData("mock platform firmware blob 2")
-		var data [16]byte
-		binary.LittleEndian.PutUint64(data[0:], 0x900000)
-		binary.LittleEndian.PutUint64(data[8:], 0xc00000)
+		data := &tcglog.EFIPlatformFirmwareBlob{
+			BlobBase:   0x900000,
+			BlobLength: 0xc00000,
+		}
 		builder.hashLogExtendEvent(c, blob, &logEvent{
 			pcrIndex:  0,
 			eventType: tcglog.EventTypeEFIPlatformFirmwareBlob,
-			data:      tcglog.OpaqueEventData(data[:])})
+			data:      data})
 	}
 
 	sbVal := []byte{0x01}
