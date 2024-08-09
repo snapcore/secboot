@@ -62,7 +62,7 @@ func (d bytesHashData) Write(w io.Writer) error {
 }
 
 type logEvent struct {
-	pcrIndex  tcglog.PCRIndex
+	pcrIndex  tpm2.Handle
 	eventType tcglog.EventType
 	data      tcglog.EventData
 }
@@ -88,10 +88,20 @@ func (b *logBuilder) hashLogExtendEvent(c *C, data logHashData, event *logEvent)
 	b.events = append(b.events, ev)
 }
 
+type DMAProtectionDisabledEventType int
+
+const (
+	DMAProtectionNotDisabled DMAProtectionDisabledEventType = iota
+	DMAProtectionDisabled
+	DMAProtectionDisabledNullTerminated
+)
+
 // LogOptions provides options for [NewLog].
 type LogOptions struct {
 	Algorithms []tpm2.HashAlgorithmId // the digest algorithms to include
 
+	FirmwareDebugger                  bool                           // indicate a firmware debugger endpoint is enabled
+	DMAProtectionDisabled             DMAProtectionDisabledEventType // whether DMA protection is disabled
 	SecureBootDisabled                bool
 	IncludeDriverLaunch               bool     // include a driver launch in the log
 	IncludeSysPrepAppLaunch           bool     // include a system-preparation app launch in the log
@@ -121,7 +131,7 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 		{
 			PCRIndex:  0,
 			EventType: tcglog.EventTypeNoAction,
-			Digests:   tcglog.DigestMap{tpm2.HashAlgorithmSHA1: make(tcglog.Digest, tpm2.HashAlgorithmSHA1.Size())},
+			Digests:   tcglog.DigestMap{tpm2.HashAlgorithmSHA1: make(tpm2.Digest, tpm2.HashAlgorithmSHA1.Size())},
 			Data: &tcglog.SpecIdEvent03{
 				SpecVersionMajor: 2,
 				UintnSize:        2,
@@ -137,14 +147,14 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 			Data:      &tcglog.StartupLocalityEventData{StartupLocality: opts.StartupLocality},
 		}
 		for _, alg := range opts.Algorithms {
-			ev.Digests[alg] = make(tcglog.Digest, alg.Size())
+			ev.Digests[alg] = make(tpm2.Digest, alg.Size())
 		}
 		builder.events = append(builder.events, ev)
 	}
 
 	// Mock S-CRTM measurements
 	{
-		data := tcglog.StringEventData("1.0")
+		data := tcglog.GUIDEventData(efi.MakeGUID(0x8beb77ea, 0x5c75, 0x4d08, 0x8e2b, [...]byte{0x96, 0x34, 0x86, 0xda, 0xe7, 0xf7}))
 		builder.hashLogExtendEvent(c, data, &logEvent{
 			pcrIndex:  0,
 			eventType: tcglog.EventTypeSCRTMVersion,
@@ -152,23 +162,25 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 	}
 	{
 		blob := bytesHashData("mock platform firmware blob 1")
-		var data [16]byte
-		binary.LittleEndian.PutUint64(data[0:], 0x820000)
-		binary.LittleEndian.PutUint64(data[8:], 0xe0000)
+		data := &tcglog.EFIPlatformFirmwareBlob{
+			BlobBase:   0x820000,
+			BlobLength: 0xe0000,
+		}
 		builder.hashLogExtendEvent(c, blob, &logEvent{
 			pcrIndex:  0,
 			eventType: tcglog.EventTypeEFIPlatformFirmwareBlob,
-			data:      tcglog.OpaqueEventData(data[:])})
+			data:      data})
 	}
 	{
 		blob := bytesHashData("mock platform firmware blob 2")
-		var data [16]byte
-		binary.LittleEndian.PutUint64(data[0:], 0x900000)
-		binary.LittleEndian.PutUint64(data[8:], 0xc00000)
+		data := &tcglog.EFIPlatformFirmwareBlob{
+			BlobBase:   0x900000,
+			BlobLength: 0xc00000,
+		}
 		builder.hashLogExtendEvent(c, blob, &logEvent{
 			pcrIndex:  0,
 			eventType: tcglog.EventTypeEFIPlatformFirmwareBlob,
-			data:      tcglog.OpaqueEventData(data[:])})
+			data:      data})
 	}
 
 	sbVal := []byte{0x01}
@@ -177,6 +189,15 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 	}
 
 	// Mock secure boot config measurements
+	if opts.FirmwareDebugger {
+		data := tcglog.FirmwareDebuggerEvent
+		builder.hashLogExtendEvent(c, data, &logEvent{
+			pcrIndex:  7,
+			eventType: tcglog.EventTypeEFIAction,
+			data:      data,
+		})
+	}
+
 	for _, sbvar := range []struct {
 		name efi.VariableDescriptor
 		data []byte
@@ -220,6 +241,21 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 		builder.hashLogExtendEvent(c, data, &logEvent{
 			pcrIndex:  7,
 			eventType: tcglog.EventTypeSeparator,
+			data:      data})
+	}
+	if opts.DMAProtectionDisabled > DMAProtectionNotDisabled {
+		var data tcglog.EventData
+		switch opts.DMAProtectionDisabled {
+		case DMAProtectionDisabled:
+			data = tcglog.DMAProtectionDisabled
+		case DMAProtectionDisabledNullTerminated:
+			data = tcglog.OpaqueEventData(append([]byte(tcglog.DMAProtectionDisabled), 0x00))
+		default:
+			c.Fatal("invalid value for DMAProtectionDisabled")
+		}
+		builder.hashLogExtendEvent(c, data, &logEvent{
+			pcrIndex:  7,
+			eventType: tcglog.EventTypeEFIAction,
 			data:      data})
 	}
 
@@ -367,7 +403,7 @@ func NewLog(c *C, opts *LogOptions) *tcglog.Log {
 			eventType: tcglog.EventTypeEFIAction,
 			data:      data})
 	}
-	for _, pcr := range []tcglog.PCRIndex{0, 1, 2, 3, 4, 5, 6} {
+	for _, pcr := range []tpm2.Handle{0, 1, 2, 3, 4, 5, 6} {
 		data := &tcglog.SeparatorEventData{Value: tcglog.SeparatorEventNormalValue}
 		builder.hashLogExtendEvent(c, data, &logEvent{
 			pcrIndex:  pcr,

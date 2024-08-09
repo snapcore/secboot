@@ -20,14 +20,43 @@
 package preinstall
 
 type (
-	DetectVirtResult = detectVirtResult
+	CheckTPM2DeviceFlags                   = checkTPM2DeviceFlags
+	CpuVendor                              = cpuVendor
+	DetectVirtResult                       = detectVirtResult
+	DriversAndAppsResultFlags              = driversAndAppsResultFlags
+	MeVersion                              = meVersion
+	PlatformFirmwareProtectionsResultFlags = platformFirmwareProtectionsResultFlags
 )
 
 const (
-	DetectVirtNone = detectVirtNone
-	DetectVirtVM   = detectVirtVM
+	CheckTPM2DeviceInVM                                = checkTPM2DeviceInVM
+	CheckTPM2DevicePostInstall                         = checkTPM2DevicePostInstall
+	CpuVendorIntel                                     = cpuVendorIntel
+	CpuVendorAMD                                       = cpuVendorAMD
+	DetectVirtNone                                     = detectVirtNone
+	DetectVirtVM                                       = detectVirtVM
+	DriversAndAppsDriversPresent                       = driversAndAppsDriversPresent
+	MeFamilyUnknown                                    = meFamilyUnknown
+	MeFamilySps                                        = meFamilySps
+	MeFamilyTxe                                        = meFamilyTxe
+	MeFamilyMe                                         = meFamilyMe
+	MeFamilyCsme                                       = meFamilyCsme
+	PlatformFirmwareProtectionsTPMLocality3IsProtected = platformFirmwareProtectionsTPMLocality3IsProtected
 )
 
 var (
-	DetectVirtualization = detectVirtualization
+	CalculateIntelMEFamily                              = calculateIntelMEFamily
+	CheckCPUDebuggingLockedMSR                          = checkCPUDebuggingLockedMSR
+	CheckDriversAndAppsMeasurements                     = checkDriversAndAppsMeasurements
+	CheckFirmwareLogAndChoosePCRBank                    = checkFirmwareLogAndChoosePCRBank
+	CheckForKernelIOMMU                                 = checkForKernelIOMMU
+	CheckPlatformFirmwareMeasurements                   = checkPlatformFirmwareMeasurements
+	CheckPlatformFirmwareProtections                    = checkPlatformFirmwareProtections
+	CheckPlatformFirmwareProtectionsIntelMEI            = checkPlatformFirmwareProtectionsIntelMEI
+	CheckSecureBootPolicyPCRForDegradedFirmwareSettings = checkSecureBootPolicyPCRForDegradedFirmwareSettings
+	DetectVirtualization                                = detectVirtualization
+	DetermineCPUVendor                                  = determineCPUVendor
+	OpenAndCheckTPM2Device                              = openAndCheckTPM2Device
+	ReadIntelHFSTSRegistersFromMEISysfs                 = readIntelHFSTSRegistersFromMEISysfs
+	ReadIntelMEVersionFromMEISysfs                      = readIntelMEVersionFromMEISysfs
 )

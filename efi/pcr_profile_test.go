@@ -745,7 +745,7 @@ func (s *pcrProfileSuite) TestAddPCRProfileUC20WithExtraProfiles(c *C) {
 		expected: []tpm2.PCRValues{
 			{
 				tpm2.HashAlgorithmSHA256: {
-					0:  testutil.DecodeHexString(c, "3d2b11b4c5cb623acbde6d14205217e47ebd368eab861e4fed782bb99be4598a"),
+					0:  testutil.DecodeHexString(c, "89f30470312a025085f66bc4a2c70288d753ed56496d7808926a36a7af57f8b1"),
 					2:  testutil.DecodeHexString(c, "3d458cfe55cc03ea1f443f1562beec8df51c75e14a9fcf9a7234a13f198e7969"),
 					4:  testutil.DecodeHexString(c, "bec6121586508581e08a41244944292ef452879f8e19c7f93d166e912c6aac5e"),
 					7:  testutil.DecodeHexString(c, "3d65dbe406e9427d402488ea4f87e07e8b584c79c578a735d48d21a6405fc8bb"),
@@ -754,7 +754,7 @@ func (s *pcrProfileSuite) TestAddPCRProfileUC20WithExtraProfiles(c *C) {
 			},
 			{
 				tpm2.HashAlgorithmSHA256: {
-					0:  testutil.DecodeHexString(c, "3d2b11b4c5cb623acbde6d14205217e47ebd368eab861e4fed782bb99be4598a"),
+					0:  testutil.DecodeHexString(c, "89f30470312a025085f66bc4a2c70288d753ed56496d7808926a36a7af57f8b1"),
 					2:  testutil.DecodeHexString(c, "3d458cfe55cc03ea1f443f1562beec8df51c75e14a9fcf9a7234a13f198e7969"),
 					4:  testutil.DecodeHexString(c, "c731a39b7fc6475c7d8a9264e704902157c7cee40c22f59fa1690ea99ff70c67"),
 					7:  testutil.DecodeHexString(c, "3d65dbe406e9427d402488ea4f87e07e8b584c79c578a735d48d21a6405fc8bb"),
@@ -801,7 +801,7 @@ func (s *pcrProfileSuite) TestAddPCRProfileUC20WithPlatformFirmwareProfileSL3(c 
 		expected: []tpm2.PCRValues{
 			{
 				tpm2.HashAlgorithmSHA256: {
-					0:  testutil.DecodeHexString(c, "25a58800ba22dff433a8bb1b5084a53ddf02dc71f204053b38036fe1c0f146e2"),
+					0:  testutil.DecodeHexString(c, "d41580fada9d73a2b118afbe38b4e47e4f6917c954e7266c20f324296f48729d"),
 					2:  testutil.DecodeHexString(c, "3d458cfe55cc03ea1f443f1562beec8df51c75e14a9fcf9a7234a13f198e7969"),
 					4:  testutil.DecodeHexString(c, "bec6121586508581e08a41244944292ef452879f8e19c7f93d166e912c6aac5e"),
 					7:  testutil.DecodeHexString(c, "3d65dbe406e9427d402488ea4f87e07e8b584c79c578a735d48d21a6405fc8bb"),
@@ -810,7 +810,7 @@ func (s *pcrProfileSuite) TestAddPCRProfileUC20WithPlatformFirmwareProfileSL3(c 
 			},
 			{
 				tpm2.HashAlgorithmSHA256: {
-					0:  testutil.DecodeHexString(c, "25a58800ba22dff433a8bb1b5084a53ddf02dc71f204053b38036fe1c0f146e2"),
+					0:  testutil.DecodeHexString(c, "d41580fada9d73a2b118afbe38b4e47e4f6917c954e7266c20f324296f48729d"),
 					2:  testutil.DecodeHexString(c, "3d458cfe55cc03ea1f443f1562beec8df51c75e14a9fcf9a7234a13f198e7969"),
 					4:  testutil.DecodeHexString(c, "c731a39b7fc6475c7d8a9264e704902157c7cee40c22f59fa1690ea99ff70c67"),
 					7:  testutil.DecodeHexString(c, "3d65dbe406e9427d402488ea4f87e07e8b584c79c578a735d48d21a6405fc8bb"),
